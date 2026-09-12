@@ -37,8 +37,8 @@ import {
 } from '@/lib/googleoauth'
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
-import { renderReels, PRESETS, presetPath } from '@/lib/reels'
-import { transcribeAudio } from '@/lib/ai'
+import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
+import { transcribeAudio, suggestPosterLabels } from '@/lib/ai'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
 import fs from 'fs'
@@ -1029,20 +1029,14 @@ async function handleRoute(request, { params }) {
       return json({ file, url: `/api/media?dir=uploads&file=${file}` })
     }
 
-    // Reels render (ffmpeg - arka planda)
+    // Reels render (ffmpeg - arka planda) - tek veya coklu sahne
     if (route === '/studio/render' && method === 'POST') {
       const b = await request.json()
-      if (!b.posterDataUrl && !b.posterFile) return json({ error: 'posterDataUrl veya posterFile zorunlu' }, 400)
+      const hasScenes = Array.isArray(b.scenes) && b.scenes.length > 0
+      if (!hasScenes && !b.posterDataUrl && !b.posterFile) return json({ error: 'posterDataUrl, posterFile veya scenes zorunlu' }, 400)
       ensureDirs()
       const id = uuidv4()
-      const posterFile = `poster_${id}.png`
-      const posterAbs = path.join(UPLOAD_DIR, posterFile)
-      if (b.posterDataUrl) {
-        const data = String(b.posterDataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
-        await fsp.writeFile(posterAbs, Buffer.from(data, 'base64'))
-      } else {
-        await fsp.copyFile(path.join(UPLOAD_DIR, safeName(b.posterFile)), posterAbs)
-      }
+
       // audio
       let audioPath = null
       const mode = b.audioMode || 'silent'
@@ -1051,24 +1045,66 @@ async function handleRoute(request, { params }) {
         const ap = path.join(UPLOAD_DIR, safeName(b.audioFile))
         if (fs.existsSync(ap)) audioPath = ap
       }
+
       const outFile = `reels_${id}.mp4`
       const outAbs = path.join(UPLOAD_DIR, outFile)
+
+      // sahneleri diske yaz
+      const scenes = []
+      if (hasScenes) {
+        for (let i = 0; i < b.scenes.length; i++) {
+          const sc = b.scenes[i]
+          const pf = `poster_${id}_${i}.png`
+          const abs = path.join(UPLOAD_DIR, pf)
+          const data = String(sc.posterDataUrl || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+          await fsp.writeFile(abs, Buffer.from(data, 'base64'))
+          scenes.push({ posterPath: abs, duration: Math.max(1, Math.min(10, Number(sc.duration) || 3)) })
+        }
+      } else {
+        const pf = `poster_${id}.png`
+        const abs = path.join(UPLOAD_DIR, pf)
+        if (b.posterDataUrl) {
+          const data = String(b.posterDataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+          await fsp.writeFile(abs, Buffer.from(data, 'base64'))
+        } else {
+          await fsp.copyFile(path.join(UPLOAD_DIR, safeName(b.posterFile)), abs)
+        }
+        scenes.push({ posterPath: abs, duration: 6 })
+      }
+
+      const totalDur = scenes.reduce((a, s) => a + s.duration, 0)
       const jobDoc = {
-        id, status: 'RENDERING', posterFile, outFile, videoUrl: null, audioMode: mode,
+        id, status: 'RENDERING', outFile, videoUrl: null, audioMode: mode,
+        sceneCount: scenes.length, transition: b.transition || 'fade', duration: totalDur,
         title: b.title || '', description: b.description || '', error: null, createdAt: new Date(), updatedAt: new Date(),
       }
       await database.collection('renders').insertOne(jobDoc)
-      // arka planda render
-      renderReels({ posterPath: posterAbs, outPath: outAbs, audioPath, duration: 6 })
+
+      renderMultiScene({ scenes, transition: b.transition || 'fade', transitionDur: b.transitionDur || 0.7, outPath: outAbs, audioPath })
         .then(async () => {
           await database.collection('renders').updateOne({ id }, { $set: { status: 'DONE', videoUrl: `/api/media?dir=uploads&file=${outFile}`, updatedAt: new Date() } })
-          await log('AI_VISION', 'INFO', 'Reels render tamam', { id })
+          await log('AI_VISION', 'INFO', 'Reels render tamam', { id, scenes: scenes.length })
         })
         .catch(async (e) => {
           await database.collection('renders').updateOne({ id }, { $set: { status: 'FAILED', error: e.message, updatedAt: new Date() } })
           await log('AI_VISION', 'ERROR', 'Reels render hatasi', { id, error: e.message })
         })
-      return json({ jobId: id, status: 'RENDERING' })
+      return json({ jobId: id, status: 'RENDERING', sceneCount: scenes.length })
+    }
+
+    // Afis icin AI metin onerisi
+    if (route === '/studio/suggest-labels' && method === 'POST') {
+      if (!aiConfigured()) return json({ error: 'AI yapilandirilmamis' }, 503)
+      const b = await request.json()
+      if (!b.image) return json({ error: 'image (dataUrl) zorunlu' }, 400)
+      try {
+        const s = await suggestPosterLabels(b.image, b.context || '')
+        await log('AI_VISION', 'INFO', 'Afis metin onerisi uretildi')
+        return json(s)
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Afis oneri hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
     }
 
     if (route.startsWith('/studio/render/') && method === 'GET') {

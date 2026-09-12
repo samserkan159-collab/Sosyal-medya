@@ -784,26 +784,78 @@ const schedStatusColor = {
 
 function ScheduleModule() {
   const [items, setItems] = useState([])
+  const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1) })
+  const [selDay, setSelDay] = useState(null)
   const load = async () => { try { setItems(await api('/schedule')) } catch (e) { toast.error(e.message) } }
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [])
 
   const del = async (id) => { try { await api(`/schedule/${id}`, { method: 'DELETE' }); toast.success('Silindi'); load() } catch (e) { toast.error(e.message) } }
   const now = async (id) => { try { await api(`/schedule/${id}/publish-now`, { method: 'POST' }); toast.success('Yayin tetiklendi'); load() } catch (e) { toast.error(e.message) } }
 
-  const fmt = (d) => new Date(d).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })
+  const key = (d) => { const x = new Date(d); return `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}` }
+  const byDay = {}
+  items.forEach((s) => { const k = key(s.scheduledAt); (byDay[k] = byDay[k] || []).push(s) })
+
+  const y = month.getFullYear(), m = month.getMonth()
+  const monthName = month.toLocaleDateString('tr-TR', { month: 'long', year: 'numeric' })
+  const firstIdx = (new Date(y, m, 1).getDay() + 6) % 7 // Monday-first
+  const daysInMonth = new Date(y, m + 1, 0).getDate()
+  const cells = []
+  for (let i = 0; i < firstIdx; i++) cells.push(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(y, m, d))
+  const todayK = key(new Date())
+  const dow = ['Pzt', 'Sal', 'Car', 'Per', 'Cum', 'Cmt', 'Paz']
+  const pdot = { youtube: 'bg-red-500', facebook: 'bg-blue-500', instagram: 'bg-fuchsia-500' }
+  const selItems = selDay ? (byDay[selDay] || []) : []
 
   return (
-    <Card className="border-zinc-800 bg-zinc-900/70">
-      <CardHeader><CardTitle className="flex items-center gap-2 text-base"><CalendarClock className="h-4 w-4 text-indigo-400" /> Zamanlanmis Paylasim Takvimi</CardTitle></CardHeader>
-      <CardContent>
-        {items.length ? (
-          <div className="space-y-2">
-            {items.map((s) => (
-              <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 flex-col items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-300"><CalendarClock className="h-5 w-5" /></div>
+    <div className="space-y-6">
+      <Card className="border-zinc-800 bg-zinc-900/70">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="flex items-center gap-2 text-base"><CalendarClock className="h-4 w-4 text-indigo-400" /> Zamanlanmis Paylasim Takvimi</CardTitle>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setMonth(new Date(y, m - 1, 1))} className="border-zinc-800 bg-zinc-900 text-zinc-300">‹</Button>
+            <span className="min-w-[140px] text-center text-sm font-medium capitalize">{monthName}</span>
+            <Button size="sm" variant="outline" onClick={() => setMonth(new Date(y, m + 1, 1))} className="border-zinc-800 bg-zinc-900 text-zinc-300">›</Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-7 gap-1.5">
+            {dow.map((d) => <div key={d} className="pb-1 text-center text-[11px] font-medium text-zinc-500">{d}</div>)}
+            {cells.map((date, i) => {
+              if (!date) return <div key={`e${i}`} />
+              const k = key(date)
+              const evs = byDay[k] || []
+              const isToday = k === todayK
+              const isSel = k === selDay
+              return (
+                <button key={k} onClick={() => setSelDay(k)}
+                  className={`flex min-h-[64px] flex-col rounded-lg border p-1.5 text-left transition ${isSel ? 'border-indigo-500 bg-indigo-500/10' : 'border-zinc-800 bg-zinc-950/50 hover:border-zinc-700'}`}>
+                  <span className={`text-xs ${isToday ? 'font-bold text-indigo-300' : 'text-zinc-400'}`}>{date.getDate()}</span>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {evs.slice(0, 3).map((s) => (
+                      <span key={s.id} className="flex gap-0.5">
+                        {(s.platforms || []).map((p) => <span key={p} className={`h-1.5 w-1.5 rounded-full ${pdot[p] || 'bg-zinc-500'}`} />)}
+                      </span>
+                    ))}
+                  </div>
+                  {evs.length > 0 && <span className="mt-auto text-[9px] text-zinc-500">{evs.length} paylasim</span>}
+                </button>
+              )
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-zinc-800 bg-zinc-900/70">
+        <CardHeader><CardTitle className="text-base">{selDay ? `Secili Gun (${selItems.length})` : 'Bir gune tiklayin'}</CardTitle></CardHeader>
+        <CardContent>
+          {selItems.length ? (
+            <div className="space-y-2">
+              {selItems.map((s) => (
+                <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium">{fmt(s.scheduledAt)}</p>
+                    <p className="text-sm font-medium">{new Date(s.scheduledAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {(s.platforms || []).map((p) => (
                         <Badge key={p} variant="outline" className="border-zinc-700 text-[10px] capitalize text-zinc-400">
@@ -812,21 +864,18 @@ function ScheduleModule() {
                       ))}
                     </div>
                     {s.caption && <p className="mt-1 max-w-md truncate text-xs text-zinc-500">{s.caption}</p>}
-                    {s.results && <p className="mt-1 max-w-md truncate text-[10px] text-zinc-600">{JSON.stringify(s.results)}</p>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className={schedStatusColor[s.status] || 'border-zinc-700 text-zinc-400'}>{s.status}</Badge>
+                    {s.status === 'PENDING' && <Button size="sm" onClick={() => now(s.id)} className="bg-emerald-600 text-xs hover:bg-emerald-500">Simdi</Button>}
+                    <Button size="sm" variant="ghost" onClick={() => del(s.id)} className="text-red-400 hover:bg-red-950/40"><Trash2 className="h-4 w-4" /></Button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className={schedStatusColor[s.status] || 'border-zinc-700 text-zinc-400'}>{s.status}</Badge>
-                  {s.status === 'PENDING' && <Button size="sm" onClick={() => now(s.id)} className="bg-emerald-600 text-xs hover:bg-emerald-500">Simdi Yayinla</Button>}
-                  <Button size="sm" variant="ghost" onClick={() => del(s.id)} className="text-red-400 hover:bg-red-950/40"><Trash2 className="h-4 w-4" /></Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="py-10 text-center text-sm text-zinc-600">Henuz zamanlanmis paylasim yok. "Icerik Fabrikasi &gt; Afis & Reels Studyosu"nda bir Reels uretip zamanlayin.</p>
-        )}
-      </CardContent>
-    </Card>
+              ))}
+            </div>
+          ) : <p className="py-6 text-center text-sm text-zinc-600">{selDay ? 'Bu gun paylasim yok.' : 'Takvimden bir gun secin. Yeni zamanlama Studyo\'dan yapilir.'}</p>}
+        </CardContent>
+      </Card>
+    </div>
   )
 }

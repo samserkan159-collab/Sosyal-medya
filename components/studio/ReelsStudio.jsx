@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   ImageUp, Scissors, Type, MoveUpRight, Square, Circle as CircleIcon, Star, RectangleHorizontal,
   Music, Video, Youtube, Facebook, Instagram, Loader2, Trash2, ArrowUp, ArrowDown, CalendarClock, Bold,
+  Sparkles, Layers, Plus,
 } from 'lucide-react'
 
 const api = async (path, opts) => {
@@ -50,6 +51,20 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const [schedPlatforms, setSchedPlatforms] = useState({ youtube: false, facebook: true, instagram: false })
   const [schedCaption, setSchedCaption] = useState('')
 
+  const [scenes, setScenes] = useState([])
+  const [transition, setTransition] = useState('fade')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiContext, setAiContext] = useState('')
+
+  const lockToggle = () => {
+    const canvas = c(); const o = canvas.getActiveObject(); if (!o) return
+    const willLock = !o.lockMovementX
+    o.set({ lockMovementX: willLock, lockMovementY: willLock, lockScalingX: willLock, lockScalingY: willLock, lockRotation: willLock, hasControls: !willLock })
+    canvas.requestRenderAll()
+    setSel((s) => ({ ...s, locked: willLock }))
+    toast.success(willLock ? 'Nesne kilitlendi (artik kaymaz)' : 'Kilit acildi')
+  }
+
   useEffect(() => {
     let disposed = false
     ;(async () => {
@@ -75,6 +90,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
           fontSize: o.fontSize || 28,
           bold: o.fontWeight === 'bold',
           bg: o.backgroundColor || '#16a34a',
+          locked: !!o.lockMovementX,
         })
       }
       canvas.on('selection:created', sync)
@@ -147,7 +163,10 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
     const posterDataUrl = canvas.toDataURL({ format: 'png', multiplier: MULT })
     setRendering(true); setJob(null)
     try {
-      const { jobId } = await api('/studio/render', { method: 'POST', body: JSON.stringify({ posterDataUrl, audioMode, presetId, audioFile }) })
+      const body = scenes.length > 0
+        ? { scenes: scenes.map((s) => ({ posterDataUrl: s.dataUrl, duration: s.duration })), transition, transitionDur: 0.7, audioMode, presetId, audioFile }
+        : { posterDataUrl, audioMode, presetId, audioFile }
+      const { jobId } = await api('/studio/render', { method: 'POST', body: JSON.stringify(body) })
       const poll = setInterval(async () => {
         try {
           const st = await api('/studio/render/' + jobId)
@@ -156,6 +175,33 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
         } catch (e) {}
       }, 2000)
     } catch (e) { setRendering(false); toast.error(e.message) }
+  }
+
+  const captureScene = () => {
+    const canvas = c(); if (!canvas) return
+    canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
+    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: MULT })
+    const thumb = canvas.toDataURL({ format: 'png', multiplier: 0.3 })
+    setScenes((s) => [...s, { dataUrl, thumb, duration: 3 }])
+    toast.success('Sahne kaydedildi (' + (scenes.length + 1) + '). Tuvali degistirip yeni sahne ekleyebilirsiniz.')
+  }
+  const removeScene = (i) => setScenes((s) => s.filter((_, x) => x !== i))
+  const setSceneDur = (i, v) => setScenes((s) => s.map((sc, x) => (x === i ? { ...sc, duration: v } : sc)))
+
+  const aiSuggest = async () => {
+    const canvas = c(); const img = canvas.getObjects().find((o) => o.type === 'image')
+    if (!img) { toast.error('Once bir cihaz gorseli yukleyin'); return }
+    setAiBusy(true)
+    try {
+      const r = await api('/studio/suggest-labels', { method: 'POST', body: JSON.stringify({ image: img.toDataURL({ format: 'png' }), context: aiContext }) })
+      const fab = f()
+      if (r.title) place(new fab.Textbox(r.title, { left: 28, top: 26, width: 300, fontSize: 32, fontWeight: 'bold', fill: '#ffffff' }))
+      ;(r.badges || []).forEach((t, i) => place(new fab.Textbox(t, { left: 210, top: 70 + i * 46, width: 130, fontSize: 20, fontWeight: 'bold', fill: '#111827', backgroundColor: '#fbbf24', textAlign: 'center', padding: 4 })))
+      ;(r.features || []).forEach((t, i) => place(new fab.Textbox('⚡ ' + t, { left: 22, top: 450 + i * 42, width: 180, fontSize: 16, fill: '#e5e7eb', backgroundColor: '#1e293b', padding: 4 })))
+      if (r.cta) place(new fab.Textbox('📱 ' + r.cta, { left: 0, top: CH - 54, width: CW, fontSize: 20, fill: '#ffffff', backgroundColor: '#16a34a', textAlign: 'center', padding: 4 }))
+      canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
+      toast.success('AI metinleri eklendi — konumlari serbestce duzenleyin')
+    } catch (e) { toast.error(e.message) } finally { setAiBusy(false) }
   }
 
   const publish = async (platform) => {
@@ -204,6 +250,9 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
               <button disabled={bgBusy} onClick={removeBg} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50 disabled:opacity-50">
                 {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />} Arka Plani Sil
               </button>
+              <button disabled={aiBusy} onClick={aiSuggest} className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-700/60 bg-fuchsia-950/40 px-3 py-1.5 text-xs text-fuchsia-200 hover:border-fuchsia-500/50 disabled:opacity-50">
+                {aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} AI Metin Onerisi
+              </button>
               <span className="w-px self-stretch bg-zinc-800" />
               {shapeTools.map((t) => { const Icon = t.icon; return (
                 <button key={t.label} onClick={t.fn} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50"><Icon className="h-3.5 w-3.5" /> {t.label}</button>
@@ -224,8 +273,14 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
                 {sel.isText && <label className="flex items-center gap-1.5 text-xs text-zinc-300">Boyut<input type="range" min="12" max="80" value={sel.fontSize} onChange={(e) => apply({ fontSize: Number(e.target.value) })} className="w-20" /></label>}
                 {sel.isText && <button onClick={() => apply({ bold: !sel.bold })} className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs ${sel.bold ? 'border-indigo-500 bg-indigo-500/20 text-indigo-200' : 'border-zinc-700 text-zinc-300'}`}><Bold className="h-3 w-3" /> Bold</button>}
                 {sel.isText && <label className="flex items-center gap-1.5 text-xs text-zinc-300">Arka Plan<input type="color" value={sel.bg} onChange={(e) => apply({ backgroundColor: e.target.value })} className="h-6 w-8 rounded border-0 bg-transparent" /></label>}
+                <button onClick={lockToggle} className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs ${sel.locked ? 'border-amber-500 bg-amber-500/20 text-amber-200' : 'border-zinc-700 text-zinc-300'}`}>{sel.locked ? '🔒 Kilit Ac' : '🔓 Kilitle'}</button>
               </div>
-            ) : <p className="mb-3 text-xs text-zinc-500">Bir nesne seciniz veya ekleyiniz — tum nesneler surukle/dondur/boyutlandir yapilabilir.</p>}
+            ) : <p className="mb-3 text-xs text-zinc-500">Bir nesne seciniz veya ekleyiniz — tum nesneler surukle/dondur/boyutlandir yapilabilir. Resmi ayarlayip "Kilitle" ile sabitleyebilirsiniz.</p>}
+
+            <div className="mb-3 flex flex-col gap-2 rounded-lg border border-fuchsia-500/20 bg-fuchsia-950/10 p-3 sm:flex-row sm:items-center">
+              <input value={aiContext} onChange={(e) => setAiContext(e.target.value)} placeholder="Cihaz ne ise yariyor? (AI icin ipucu, or: 'oto klima gazi dolum cihazi')" className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200" />
+              <button disabled={aiBusy} onClick={aiSuggest} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-fuchsia-600 px-3 py-2 text-xs text-white hover:bg-fuchsia-500 disabled:opacity-50">{aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} AI ile Kutulari Olustur</button>
+            </div>
 
             <div className="flex justify-center rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
               <div className="overflow-hidden rounded-[1.4rem] shadow-2xl shadow-black/60 ring-4 ring-zinc-800"><canvas ref={canvasElRef} /></div>
@@ -236,6 +291,40 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
       </div>
 
       <div className="lg:col-span-2 space-y-6">
+        <Card className="border-zinc-800 bg-zinc-900/70">
+          <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Layers className="h-4 w-4 text-cyan-400" /> Coklu Sahne (Opsiyonel)</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-zinc-500">Tuvaldeki tasarimi "Sahne Ekle" ile kaydedin, sonra tuvali degistirip yeni sahneler ekleyin. 2+ sahne varsa video secilen gecisle birlestirilir. Sahne eklemezseniz tek afis 6sn render edilir — secim sizde.</p>
+            <Button onClick={captureScene} disabled={!ready} variant="outline" className="w-full border-cyan-700/50 bg-cyan-950/20 text-cyan-200 hover:bg-cyan-900/30"><Plus className="mr-2 h-4 w-4" /> Bu Tuvali Sahne Olarak Ekle</Button>
+            {scenes.length > 0 && (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {scenes.map((s, i) => (
+                    <div key={i} className="relative">
+                      <img src={s.thumb} alt={`sahne ${i + 1}`} className="h-24 w-[54px] rounded border border-zinc-700 object-cover" />
+                      <button onClick={() => removeScene(i)} className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-white"><Trash2 className="h-3 w-3" /></button>
+                      <input type="number" min="1" max="10" value={s.duration} onChange={(e) => setSceneDur(i, Number(e.target.value))} className="mt-1 w-[54px] rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-center text-[10px] text-zinc-300" />
+                      <span className="block text-center text-[9px] text-zinc-600">sn</span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-zinc-500">Gecis Efekti (siz secin)</label>
+                  <select value={transition} onChange={(e) => setTransition(e.target.value)} className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200">
+                    <option value="fade">Yumusak Gecis (fade)</option>
+                    <option value="wipeleft">Sola Sil (wipeleft)</option>
+                    <option value="slideright">Saga Kaydir (slideright)</option>
+                    <option value="circleopen">Daire Ac (circleopen)</option>
+                    <option value="dissolve">Erime (dissolve)</option>
+                    <option value="smoothleft">Akici Sol (smoothleft)</option>
+                  </select>
+                </div>
+                <p className="text-xs text-cyan-300">{scenes.length} sahne · toplam ~{scenes.reduce((a, s) => a + Number(s.duration), 0)}sn</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
         <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Music className="h-4 w-4 text-fuchsia-400" /> Ses / Muzik Secimi</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -263,7 +352,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
         <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Video className="h-4 w-4 text-emerald-400" /> Reels Uretimi (6sn)</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <Button onClick={renderReels} disabled={rendering || !ready} className="w-full bg-emerald-600 hover:bg-emerald-500">{rendering ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Render ediliyor...</> : <><Video className="mr-2 h-4 w-4" /> 6sn Sinematik Reels Uret</>}</Button>
+            <Button onClick={renderReels} disabled={rendering || !ready} className="w-full bg-emerald-600 hover:bg-emerald-500">{rendering ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Render ediliyor...</> : <><Video className="mr-2 h-4 w-4" /> {scenes.length > 1 ? `${scenes.length} Sahneli Reels Uret` : '6sn Sinematik Reels Uret'}</>}</Button>
             {job?.videoUrl && (
               <div className="space-y-3">
                 <video src={job.videoUrl} controls className="w-full rounded-lg border border-zinc-800" />
