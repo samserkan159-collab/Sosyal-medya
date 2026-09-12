@@ -21,6 +21,14 @@ import {
   telegramConfigured,
   defaultChat,
 } from '@/lib/telegram'
+import {
+  youtubeConfigured,
+  youtubeChannelId,
+  youtubeOAuthToken,
+  listChannelCommentThreads,
+  listVideoCommentThreads,
+  replyToYoutubeComment,
+} from '@/lib/youtube'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -52,6 +60,15 @@ const PRICE_KEYWORDS = [
   'fiyat', 'ucret', 'ücret', 'ne kadar', 'kaç tl', 'kac tl', 'kaç para', 'kac para',
   'dm', 'katalog', 'bilgi', 'maliyet', 'price', 'fiyatı', 'fiyati',
 ]
+
+// YouTube icin genisletilmis anahtar kelimeler
+const YT_KEYWORDS = [
+  ...PRICE_KEYWORDS,
+  'iletisim', 'iletişim', 'nerede', 'adres', 'konum', 'contact', 'nereden', 'subeniz', 'şubeniz',
+]
+
+const DEFAULT_YT_REPLY =
+  'Ilginiz icin tesekkurler! Fiyat, iletisim ve adres bilgileri icin kanal aciklamamizdaki baglantidan bize ulasabilirsiniz. 📩'
 
 async function log(service, level, message, details) {
   try {
@@ -90,6 +107,9 @@ function integrationsStatus() {
     ai: aiConfigured(),
     meta: !!process.env.PAGE_ACCESS_TOKEN && !!process.env.PAGE_ID,
     telegram: telegramConfigured(),
+    youtube: youtubeConfigured(),
+    youtubeReply: !!youtubeOAuthToken(),
+    youtubeChannelId: youtubeChannelId(),
     verifyToken: process.env.META_VERIFY_TOKEN || '',
     graphVersion: process.env.META_GRAPH_VERSION || 'v21.0',
   }
@@ -301,6 +321,76 @@ async function processTelegramWebhook(database, body) {
   return { action: 'ignored' }
 }
 
+// ================= YOUTUBE COMMENT ENGINE =================
+async function processYoutubeComment(database, c) {
+  // c: { commentId, text, author, authorChannelId, videoId }
+  const lower = (c.text || '').toLowerCase()
+  const isMatch = YT_KEYWORDS.some((k) => lower.includes(k))
+  const sentiment = isMatch ? 'PRICE_INQUIRY' : 'GENERAL'
+
+  const lead = {
+    id: uuidv4(),
+    pageId: null,
+    platform: 'YOUTUBE_COMMENT',
+    externalUserId: c.authorChannelId || 'yt_unknown',
+    userName: c.author || 'YouTube Kullanicisi',
+    commentId: c.commentId || null,
+    postId: c.videoId || null,
+    userMessage: c.text || '',
+    replySent: false,
+    dmSent: false,
+    status: 'NEW',
+    sentiment,
+    whatsappNumber: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+
+  if (isMatch) {
+    // Otomatik yanit (OAuth2 access token gerekir)
+    const token = youtubeOAuthToken()
+    if (token && c.commentId) {
+      try {
+        await replyToYoutubeComment(c.commentId, DEFAULT_YT_REPLY, token)
+        lead.replySent = true
+      } catch (e) {
+        await log('YOUTUBE', 'ERROR', 'YouTube yorum yaniti basarisiz', { error: e.message, comment: c.commentId })
+      }
+    } else {
+      await log('YOUTUBE', 'WARN', 'YouTube yaniti atlandi (OAuth token yok)', { comment: c.commentId })
+    }
+    // Telegram alarmi
+    try {
+      const text =
+        `🎬 <b>YOUTUBE MUSTERI YAKALANDI!</b>\n\n` +
+        `👤 Kullanici: <b>${lead.userName}</b>\n` +
+        `💬 Yorum: <i>${c.text}</i>\n` +
+        `🎯 Islem: ${lead.replySent ? 'Otomatik yanit gonderildi ✅' : 'Yanit icin OAuth gerekli ⚠️'}\n` +
+        `📊 Etiket: PRICE_INQUIRY`
+      await tgSendMessage(text)
+    } catch (e) {
+      await log('TELEGRAM_BOT', 'WARN', 'YouTube Telegram alarmi gonderilemedi', { error: e.message })
+    }
+  }
+
+  try {
+    if (c.commentId) {
+      await database.collection('leads').updateOne(
+        { commentId: c.commentId },
+        { $setOnInsert: lead },
+        { upsert: true }
+      )
+    } else {
+      await database.collection('leads').insertOne(lead)
+    }
+  } catch (e) {
+    await log('YOUTUBE', 'WARN', 'YouTube lead kaydedilemedi', { error: e.message })
+  }
+
+  await log('YOUTUBE', 'INFO', `YouTube yorumu islendi (${sentiment})`, { user: lead.userName, match: isMatch })
+  return { user: lead.userName, sentiment, replySent: lead.replySent, matched: isMatch }
+}
+
 // ================= ROUTER =================
 async function handleRoute(request, { params }) {
   const { path = [] } = await params
@@ -332,6 +422,7 @@ async function handleRoute(request, { params }) {
         database.collection('audit_reports').find({}).sort({ createdAt: -1 }).limit(1).toArray(),
       ])
       const recentLeads = await database.collection('leads').find({}).sort({ createdAt: -1 }).limit(6).toArray()
+      const youtubeLeads = await database.collection('leads').countDocuments({ platform: 'YOUTUBE_COMMENT' })
       const allPages = await database.collection('facebook_pages').find({}).toArray()
       const avgHealth = allPages.length
         ? Math.round(allPages.reduce((a, p) => a + (p.healthScore || 0), 0) / allPages.length)
@@ -342,6 +433,7 @@ async function handleRoute(request, { params }) {
         priceInquiries: priceLeads,
         publishedPosts: published,
         pendingApproval: pending,
+        youtubeLeads,
         avgHealth,
         lastReport: reports[0] ? strip(reports[0]) : null,
         recentLeads: recentLeads.map(strip),
@@ -658,6 +750,85 @@ async function handleRoute(request, { params }) {
       const body = await request.json()
       const result = await processTelegramWebhook(database, body)
       return json({ ok: true, result })
+    }
+
+    // ---- YOUTUBE ----
+    if (route === '/youtube/status' && method === 'GET') {
+      const ytLeads = await database.collection('leads').countDocuments({ platform: 'YOUTUBE_COMMENT' })
+      return json({
+        configured: youtubeConfigured(),
+        replyEnabled: !!youtubeOAuthToken(),
+        channelId: youtubeChannelId(),
+        capturedLeads: ytLeads,
+      })
+    }
+
+    // Kanal / video yorumlarini tara + fiyat/iletisim yorumlarina otomatik yanit
+    if (route === '/youtube/scan' && method === 'POST') {
+      const b = await request.json()
+      if (!youtubeConfigured()) return json({ error: 'YOUTUBE_API_KEY tanimli degil' }, 400)
+      const channelId = b.channelId || youtubeChannelId()
+      const videoId = b.videoId
+      if (!channelId && !videoId) return json({ error: 'channelId veya videoId gerekli' }, 400)
+      let data
+      try {
+        data = videoId ? await listVideoCommentThreads(videoId) : await listChannelCommentThreads(channelId)
+      } catch (e) {
+        await log('YOUTUBE', 'ERROR', 'YouTube tarama hatasi', { error: e.message })
+        return json({ error: 'YouTube API hatasi: ' + e.message }, 502)
+      }
+      const processed = []
+      for (const item of data.items || []) {
+        const top = item.snippet?.topLevelComment
+        if (!top) continue
+        const r = await processYoutubeComment(database, {
+          commentId: top.id,
+          text: top.snippet?.textOriginal || top.snippet?.textDisplay || '',
+          author: top.snippet?.authorDisplayName,
+          authorChannelId: top.snippet?.authorChannelId?.value,
+          videoId: item.snippet?.videoId || videoId,
+        })
+        processed.push(r)
+      }
+      return json({ ok: true, scanned: (data.items || []).length, processed })
+    }
+
+    // YouTube yorum motoru testi (anahtar olmadan calisir - gercek DB kaydi)
+    if (route === '/youtube/simulate' && method === 'POST') {
+      const b = await request.json()
+      const r = await processYoutubeComment(database, {
+        commentId: 'yt_sim_' + uuidv4(),
+        text: b.message || 'Bu urunun fiyati ne kadar, nerede satiyorsunuz?',
+        author: b.userName || 'YouTube Test',
+        authorChannelId: 'UC_sim_' + uuidv4().slice(0, 8),
+        videoId: 'vid_' + uuidv4().slice(0, 8),
+      })
+      return json({ ok: true, simulated: true, processed: [r] })
+    }
+
+    // YouTube Shorts yayinlama (OAuth2 gerekir)
+    if (route === '/youtube/publish' && method === 'POST') {
+      const b = await request.json()
+      const token = youtubeOAuthToken()
+      if (!token) {
+        return json({
+          error: 'OAUTH_REQUIRED',
+          message:
+            "YouTube Shorts yuklemek icin OAuth2 access token (youtube.upload izni) gereklidir. Sadece YOUTUBE_API_KEY yorum okuma/tarama icindir. OAuth baglantisi kurulunca aktiflesecek.",
+        }, 501)
+      }
+      // OAuth token mevcutsa: video dosyasi + resumable upload akisi gerektirir.
+      if (b.id) {
+        await database.collection('content_posts').updateOne(
+          { id: b.id },
+          { $set: { status: 'SCHEDULED', updatedAt: new Date() } }
+        )
+      }
+      return json({
+        ok: true,
+        message: 'OAuth token bulundu. Video dosyasi resumable upload ile yuklenmelidir (medya dosyasi bekleniyor).',
+        requiresMedia: true,
+      })
     }
 
     // ---- Test simulator: fake a Meta comment to run the engine end-to-end ----

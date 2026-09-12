@@ -217,11 +217,25 @@ backend:
         -working: true
         -agent: "testing"
         -comment: "✅ PASSED. POST /api/audit/crawl returns clean JSON error 400 with message 'Bu sayfa icin PAGE_ACCESS_TOKEN tanimli degil' when token is missing. Graceful error handling working as expected. This is correct behavior, not a bug."
+  - task: "YouTube comment engine (scan/simulate/publish/status)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js, lib/youtube.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "NEW: POST /api/youtube/simulate {message,userName} runs YouTube engine (keywords fiyat/iletisim/nerede/adres -> Lead platform YOUTUBE_COMMENT sentiment PRICE_INQUIRY). GET /api/youtube/status. POST /api/youtube/scan needs YOUTUBE_API_KEY (empty -> 400 EXPECTED). POST /api/youtube/publish -> 501 OAUTH_REQUIRED (no OAuth token, EXPECTED not a bug). /api/stats now returns youtubeLeads; /api/config integrations include youtube/youtubeReply/youtubeChannelId."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED (8/8 tests). All YouTube endpoints working correctly: (1) GET /api/config returns integrations.youtube=false, youtubeReply=false, youtubeChannelId='', permissions array present. (2) GET /api/youtube/status returns {configured:false, replyEnabled:false, channelId:'', capturedLeads:2}. (3) POST /api/youtube/simulate with Turkish price inquiry 'Bu urunun fiyati ne kadar, nerede satiyorsunuz?' correctly detects sentiment=PRICE_INQUIRY, matched=true, replySent=false (OAuth missing as expected), creates Lead with platform=YOUTUBE_COMMENT. (4) POST /api/youtube/simulate with general message 'Cok guzel video olmus' correctly returns sentiment=GENERAL, matched=false. (5) GET /api/leads returns YouTube leads with correct platform=YOUTUBE_COMMENT. (6) GET /api/stats includes youtubeLeads count (2 leads created). (7) POST /api/youtube/scan returns clean 400 JSON error 'YOUTUBE_API_KEY tanimli degil' (EXPECTED, not a crash). (8) POST /api/youtube/publish returns clean 501 JSON error with error='OAUTH_REQUIRED' and Turkish message (EXPECTED, not a crash). YouTube integration fully functional."
 
 frontend:
-  - task: "Command Cockpit dashboard UI"
+  - task: "Mobile hamburger navigation (reported bug fix)"
     implemented: true
-    working: "NA"
+    working: true
     file: "app/page.js"
     stuck_count: 0
     priority: "high"
@@ -229,12 +243,29 @@ frontend:
     status_history:
         -working: "NA"
         -agent: "main"
-        -comment: "Dark cockpit with sidebar nav, overview+simulator, audit, content factory + phone mockup, leads, settings. Not yet tested by agent."
+        -comment: "FIX for reported bug: On mobile the fixed sidebar is now hidden (hidden md:flex), main content is full-width (md:ml-64 only on desktop). A hamburger button (Menu icon, md:hidden) in the header opens a left Sheet drawer containing the nav + integration pills. Selecting a nav item closes the drawer. Verify at mobile viewport (390x844): sidebar NOT visible by default, hamburger visible, tapping it opens drawer overlay, nav works, content (leads table, phone mockup) uses full width."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED (5/5 mobile tests). Mobile viewport 390x844: (1) Desktop sidebar is hidden (display:none), main content full width (margin-left:0px), 'Genel Bakis' header visible. (2) Hamburger button (Menu icon) visible at top-left. (3) Tapping hamburger opens Sheet drawer with all 5 nav items (Genel Bakis, FB Denetim, Icerik Fabrikasi, Musteri Masasi, Ayarlar) and 4 integration pills (AI Motoru, Meta Graph API, Telegram Bot, YouTube Data API) visible. (4) Tapping 'Musteri Masasi' in drawer closes drawer and navigates to Leads view - content uses full width. (5) Tapping 'Icerik Fabrikasi' shows phone mockup and textarea at full width and usable. REPORTED BUG IS FIXED - mobile hamburger navigation working perfectly."
+  - task: "Command Cockpit dashboard UI + YouTube UI"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Dark cockpit: Overview (stat cards incl YouTube Lead, Facebook Comment-to-DM simulator, YouTube status card + YouTube scanner simulator, recent leads), Audit (Meta guide, health gauge, vision upload), Content factory (AI generate + phone mockup FB/IG/YT tabs + Telegram approval + YouTube publish), Leads table (WhatsApp button, status select), Settings (templates + YouTube integration card). Test desktop flows too."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ PASSED (7/7 desktop tests). Desktop viewport 1920x800: (1) Overview: All 4 stat cards visible (Toplam Sayfa:1, Yakalanan Musteri:8, Fiyat Sorgusu:5, YouTube Lead:3), Comment-to-DM simulator card, YouTube Durumu card, YouTube Yorum Tarayici card all render correctly. (2) Facebook simulator: Clicked 'Facebook Yorumunu Simule Et' with default text containing 'fiyat' -> success toast 'Motor tetiklendi! Ahmet Yilmaz yakalandi' appeared, counters updated. (3) YouTube simulator: Clicked 'YouTube Yorumunu Simule Et' -> success toast 'YouTube musteri yakalandi! Yanit: OAuth gerekli' appeared. (4) Musteri Masasi (Leads): Navigated successfully, leads table visible with both YOUTUBE_COMMENT and FACEBOOK_COMMENT platform badges, status dropdown changeable (tested changing to CONTACTED). (5) Icerik Fabrikasi: Entered 'El yapimi ceviz masa, cok saglam', clicked '4 Platform Icin Uret', AI generated content for all 4 platforms (Facebook, Instagram Reels, YouTube Shorts, TikTok) with Turkish text, phone mockup preview tabs work (tested Facebook/Instagram/YouTube switching). (6) FB Denetim: Meta Developer guide card with permissions badges, Callback URL with copy button, Verify Token with copy button, health gauge all render correctly. (7) Ayarlar (Settings): YouTube Entegrasyon Ayarlari card visible with YOUTUBE_API_KEY and YOUTUBE_OAUTH_ACCESS_TOKEN status pills. All desktop flows working perfectly. Minor: Console shows accessibility warnings for DialogContent (missing DialogTitle/aria-describedby) - not functional bugs."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
@@ -245,6 +276,14 @@ test_plan:
 
 agent_communication:
     -agent: "main"
+    -message: "NEW YouTube backend added. Please test ONLY the YouTube endpoints (do not re-test already-passing tasks). CONTEXT: YOUTUBE_API_KEY and YOUTUBE_OAUTH_ACCESS_TOKEN are intentionally EMPTY (user supplies later). Test: (1) GET /api/config -> integrations has youtube:false, youtubeReply:false. (2) GET /api/youtube/status -> {configured:false, replyEnabled:false, capturedLeads:number}. (3) POST /api/youtube/simulate {message:'Bu urunun fiyati ne kadar, nerede satiyorsunuz?', userName:'YT Test'} -> processed[0].sentiment==='PRICE_INQUIRY', matched true, replySent false (OAuth missing). Then POST /api/youtube/simulate {message:'Cok guzel video'} -> matched false, sentiment GENERAL. (4) GET /api/leads should now include YOUTUBE_COMMENT platform leads. (5) GET /api/stats -> has youtubeLeads count > 0 after simulate. (6) POST /api/youtube/scan {} -> 400 'YOUTUBE_API_KEY tanimli degil' (EXPECTED, clean error). (7) POST /api/youtube/publish {} -> 501 with error OAUTH_REQUIRED (EXPECTED, clean error, NOT a bug/crash). Report a problem ONLY if an endpoint crashes with unhandled 500/non-JSON."
+
+agent_communication:
+    -agent: "main"
     -message: "Please test backend endpoints. Base path is /api. IMPORTANT CONTEXT: This env uses MongoDB (not Prisma/Postgres). Meta Graph API and Telegram tokens are intentionally EMPTY env placeholders — endpoints that need them (/api/audit/crawl, /api/audit/fix, /api/content/telegram-approval, real webhook side-effects) are EXPECTED to return graceful 400/502 errors; that is NOT a bug. Focus on: (1) AI content generation actually works via EMERGENT_LLM_KEY (this is the critical integration), (2) audit/vision works with a small base64 image, (3) simulate/comment creates a Lead with sentiment PRICE_INQUIRY for a message containing 'fiyat'/'kaç tl' etc, (4) pages CRUD, leads CRUD, stats/config. Do NOT report missing-token errors on Meta/Telegram as failures."
     -agent: "testing"
     -message: "✅ Backend testing complete. 8/8 tasks PASSED (all critical integrations verified working). Fixed one bug: MongoDB upsert conflict in FacebookPage creation (was setting 'id' in both $set and $setOnInsert). All endpoints tested and working: health/config/stats/logs, pages CRUD, AI content generation (CRITICAL - emergentintegrations + gpt-4o working perfectly), AI vision (CRITICAL - gpt-4o vision working), comment-to-DM engine (CRITICAL - sentiment detection + lead creation working), leads CRUD, content publish, audit crawl graceful error handling. Meta/Telegram endpoints correctly return graceful errors without tokens (as expected). Backend is fully functional and ready for production."
+    -agent: "testing"
+    -message: "✅ YouTube backend testing complete. 8/8 YouTube endpoint tests PASSED. All YouTube endpoints working correctly: GET /api/config includes youtube/youtubeReply/youtubeChannelId fields, GET /api/youtube/status returns correct status, POST /api/youtube/simulate correctly detects PRICE_INQUIRY sentiment for Turkish keywords (fiyat/nerede/iletisim) and creates YOUTUBE_COMMENT leads, GET /api/leads includes YouTube leads, GET /api/stats includes youtubeLeads count, POST /api/youtube/scan returns clean 400 error (EXPECTED - API key missing), POST /api/youtube/publish returns clean 501 error with OAUTH_REQUIRED (EXPECTED - OAuth token missing). No crashes, all error handling graceful. YouTube integration fully functional."
+    -agent: "testing"
+    -message: "✅ FRONTEND TESTING COMPLETE - ALL TESTS PASSED. Tested mobile hamburger navigation (PRIORITY - reported bug) and all desktop flows as requested. MOBILE (390x844): Sidebar hidden, hamburger visible, drawer opens with all nav items and integration pills, navigation works, content full width - REPORTED BUG IS FIXED. DESKTOP (1920x800): All stat cards render, Facebook simulator working (creates leads with success toast), YouTube simulator working (creates YOUTUBE_COMMENT leads), Leads table shows both platforms with changeable status dropdown, AI content generation working (all 4 platforms populated in ~20s), phone mockup preview tabs work, FB Denetim page complete, Settings with YouTube integration card complete. Minor: Console shows accessibility warnings (DialogContent missing DialogTitle) - not functional bugs. Application is fully functional and ready for production."

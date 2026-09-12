@@ -1,718 +1,435 @@
 #!/usr/bin/env python3
 """
-Command Cockpit Backend API Test Suite
-Tests all backend endpoints with focus on AI integration (emergentintegrations)
+Backend API Test Suite for Command Cockpit - YouTube Endpoints
+Tests ONLY the newly added YouTube endpoints
 """
 
 import requests
 import json
-import base64
+import sys
+from datetime import datetime
 
-# Base URL from .env NEXT_PUBLIC_BASE_URL
+# Base URL from .env
 BASE_URL = "https://audit-hub-154.preview.emergentagent.com/api"
 
-# Test data
-test_page_data = {
-    "pageId": "1234567890",
-    "pageName": "Test Ustam",
-    "whatsappNumber": "905551112233"
-}
+def log_test(test_name, status, details=""):
+    """Log test results"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status_icon = "✅" if status == "PASS" else "❌"
+    print(f"\n{status_icon} [{timestamp}] {test_name}")
+    if details:
+        print(f"   {details}")
 
-test_content_input = "El yapimi ceviz agacindan yeni masa modelimiz cikti, cok saglam"
-
-# Helper to create a small valid base64 PNG (1x1 pixel)
-def create_test_image_base64():
-    """Create a minimal valid 10x10 red PNG for testing"""
-    # A proper 10x10 red PNG (valid for OpenAI vision API)
-    # This is a real PNG file encoded as base64
-    png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJADveWkH6oAAAAAElFTkSuQmCC"
-    return f"data:image/png;base64,{png_base64}"
-
-def test_health_endpoint():
-    """Test 1: GET /api/ -> 200, JSON with status ok + integrations object"""
-    print("\n" + "="*80)
-    print("TEST 1: Health Endpoint (GET /api/)")
-    print("="*80)
-    try:
-        response = requests.get(f"{BASE_URL}/", timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        data = response.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
-        
-        if data.get('status') != 'ok':
-            print(f"❌ FAILED: Expected status 'ok', got {data.get('status')}")
-            return False
-        
-        if 'integrations' not in data:
-            print(f"❌ FAILED: Missing 'integrations' object")
-            return False
-        
-        print("✅ PASSED: Health endpoint working correctly")
-        return True
-    except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
-        return False
-
-def test_config_endpoint():
-    """Test 2: GET /api/config -> integrations + permissions array (8 permissions)"""
-    print("\n" + "="*80)
-    print("TEST 2: Config Endpoint (GET /api/config)")
-    print("="*80)
+def test_config_youtube_integration():
+    """Test 1: GET /api/config -> integrations includes youtube, youtubeReply, youtubeChannelId, permissions"""
     try:
         response = requests.get(f"{BASE_URL}/config", timeout=10)
-        print(f"Status Code: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            log_test("GET /api/config", "FAIL", f"Expected 200, got {response.status_code}")
             return False
         
         data = response.json()
-        print(f"Response: {json.dumps(data, indent=2)}")
         
-        if 'integrations' not in data:
-            print(f"❌ FAILED: Missing 'integrations' object")
+        # Check integrations object exists
+        if "integrations" not in data:
+            log_test("GET /api/config", "FAIL", "Missing 'integrations' object")
             return False
         
-        if 'permissions' not in data:
-            print(f"❌ FAILED: Missing 'permissions' array")
+        integrations = data["integrations"]
+        
+        # Check youtube fields
+        if "youtube" not in integrations:
+            log_test("GET /api/config", "FAIL", "Missing 'youtube' field in integrations")
             return False
         
-        if not isinstance(data['permissions'], list):
-            print(f"❌ FAILED: 'permissions' is not an array")
+        if "youtubeReply" not in integrations:
+            log_test("GET /api/config", "FAIL", "Missing 'youtubeReply' field in integrations")
             return False
         
-        if len(data['permissions']) != 8:
-            print(f"❌ FAILED: Expected 8 permissions, got {len(data['permissions'])}")
+        if "youtubeChannelId" not in integrations:
+            log_test("GET /api/config", "FAIL", "Missing 'youtubeChannelId' field in integrations")
             return False
         
-        print("✅ PASSED: Config endpoint working correctly")
+        # Check permissions array
+        if "permissions" not in data:
+            log_test("GET /api/config", "FAIL", "Missing 'permissions' array")
+            return False
+        
+        if not isinstance(data["permissions"], list):
+            log_test("GET /api/config", "FAIL", "permissions is not an array")
+            return False
+        
+        # Verify values (should be false since keys are empty)
+        if integrations["youtube"] != False:
+            log_test("GET /api/config", "FAIL", f"Expected youtube:false, got {integrations['youtube']}")
+            return False
+        
+        if integrations["youtubeReply"] != False:
+            log_test("GET /api/config", "FAIL", f"Expected youtubeReply:false, got {integrations['youtubeReply']}")
+            return False
+        
+        log_test("GET /api/config", "PASS", 
+                f"integrations.youtube={integrations['youtube']}, youtubeReply={integrations['youtubeReply']}, "
+                f"youtubeChannelId='{integrations['youtubeChannelId']}', permissions={len(data['permissions'])} items")
         return True
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
+        log_test("GET /api/config", "FAIL", f"Exception: {str(e)}")
         return False
 
-def test_stats_and_logs():
-    """Test 3: GET /api/stats -> counts + integrations. GET /api/logs -> array"""
-    print("\n" + "="*80)
-    print("TEST 3: Stats and Logs Endpoints")
-    print("="*80)
-    
-    # Test stats
+def test_youtube_status():
+    """Test 2: GET /api/youtube/status -> {configured:false, replyEnabled:false, channelId:"", capturedLeads:<number>}"""
     try:
-        print("\n--- Testing GET /api/stats ---")
-        response = requests.get(f"{BASE_URL}/stats", timeout=10)
-        print(f"Status Code: {response.status_code}")
+        response = requests.get(f"{BASE_URL}/youtube/status", timeout=10)
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            log_test("GET /api/youtube/status", "FAIL", f"Expected 200, got {response.status_code}")
             return False
         
         data = response.json()
-        print(f"Response keys: {list(data.keys())}")
         
-        required_keys = ['totalPages', 'totalLeads', 'integrations']
-        for key in required_keys:
-            if key not in data:
-                print(f"❌ FAILED: Missing '{key}' in stats response")
-                return False
-        
-        print("✅ Stats endpoint working")
-    except Exception as e:
-        print(f"❌ FAILED: Stats exception - {str(e)}")
-        return False
-    
-    # Test logs
-    try:
-        print("\n--- Testing GET /api/logs ---")
-        response = requests.get(f"{BASE_URL}/logs", timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        data = response.json()
-        if not isinstance(data, list):
-            print(f"❌ FAILED: Expected array, got {type(data)}")
-            return False
-        
-        print(f"✅ Logs endpoint working (returned {len(data)} logs)")
-        return True
-    except Exception as e:
-        print(f"❌ FAILED: Logs exception - {str(e)}")
-        return False
-
-def test_facebook_page_crud():
-    """Test 4: FacebookPage CRUD operations"""
-    print("\n" + "="*80)
-    print("TEST 4: FacebookPage CRUD")
-    print("="*80)
-    
-    created_page_id = None
-    
-    # POST /api/pages
-    try:
-        print("\n--- Testing POST /api/pages ---")
-        response = requests.post(f"{BASE_URL}/pages", json=test_page_data, timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            print(f"Response: {response.text}")
-            return False
-        
-        page = response.json()
-        print(f"Created page: {json.dumps(page, indent=2)}")
-        
-        # Verify UUID id and no _id
-        if 'id' not in page:
-            print(f"❌ FAILED: Missing 'id' field")
-            return False
-        
-        if '_id' in page:
-            print(f"❌ FAILED: Found '_id' field (should be stripped)")
-            return False
-        
-        created_page_id = page['id']
-        print(f"✅ Page created with UUID: {created_page_id}")
-    except Exception as e:
-        print(f"❌ FAILED: POST exception - {str(e)}")
-        return False
-    
-    # GET /api/pages
-    try:
-        print("\n--- Testing GET /api/pages ---")
-        response = requests.get(f"{BASE_URL}/pages", timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        pages = response.json()
-        if not isinstance(pages, list):
-            print(f"❌ FAILED: Expected array, got {type(pages)}")
-            return False
-        
-        # Find our created page
-        found = any(p.get('id') == created_page_id for p in pages)
-        if not found:
-            print(f"❌ FAILED: Created page not found in list")
-            return False
-        
-        print(f"✅ Page found in list (total: {len(pages)} pages)")
-    except Exception as e:
-        print(f"❌ FAILED: GET pages exception - {str(e)}")
-        return False
-    
-    # GET /api/pages/:id
-    try:
-        print(f"\n--- Testing GET /api/pages/{created_page_id} ---")
-        response = requests.get(f"{BASE_URL}/pages/{created_page_id}", timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        page = response.json()
-        if page.get('id') != created_page_id:
-            print(f"❌ FAILED: Wrong page returned")
-            return False
-        
-        print(f"✅ Individual page retrieved correctly")
-    except Exception as e:
-        print(f"❌ FAILED: GET page by id exception - {str(e)}")
-        return False
-    
-    # PUT /api/pages/:id
-    try:
-        print(f"\n--- Testing PUT /api/pages/{created_page_id} ---")
-        update_data = {
-            "commentTemplate": "Yeni sablon",
-            "autoReplyActive": False
-        }
-        response = requests.put(f"{BASE_URL}/pages/{created_page_id}", json=update_data, timeout=10)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        updated_page = response.json()
-        if updated_page.get('commentTemplate') != "Yeni sablon":
-            print(f"❌ FAILED: commentTemplate not updated")
-            return False
-        
-        if updated_page.get('autoReplyActive') != False:
-            print(f"❌ FAILED: autoReplyActive not updated")
-            return False
-        
-        print(f"✅ Page updated successfully")
-        print("✅ PASSED: All FacebookPage CRUD operations working")
-        return True
-    except Exception as e:
-        print(f"❌ FAILED: PUT exception - {str(e)}")
-        return False
-
-def test_ai_content_generation():
-    """Test 5: AI Content Generation (CRITICAL - emergentintegrations gpt-4o)"""
-    print("\n" + "="*80)
-    print("TEST 5: AI Content Generation (CRITICAL)")
-    print("="*80)
-    
-    try:
-        print(f"\n--- Testing POST /api/content/generate ---")
-        print(f"Input text: {test_content_input}")
-        
-        response = requests.post(
-            f"{BASE_URL}/content/generate",
-            json={"inputText": test_content_input},
-            timeout=30  # AI calls may take longer
-        )
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            print(f"Response: {response.text}")
-            return False
-        
-        post = response.json()
-        print(f"\nGenerated content keys: {list(post.keys())}")
-        
-        # Check all required fields
-        required_fields = ['fbCaption', 'igCaption', 'ytTitle', 'ytDescription', 'tiktokCaption', 'hashtags']
+        # Check required fields
+        required_fields = ["configured", "replyEnabled", "channelId", "capturedLeads"]
         for field in required_fields:
-            if field not in post:
-                print(f"❌ FAILED: Missing field '{field}'")
+            if field not in data:
+                log_test("GET /api/youtube/status", "FAIL", f"Missing required field: {field}")
                 return False
-            
-            if field == 'hashtags':
-                if not isinstance(post[field], list):
-                    print(f"❌ FAILED: 'hashtags' is not an array")
-                    return False
-            else:
-                if not post[field] or not isinstance(post[field], str):
-                    print(f"❌ FAILED: Field '{field}' is empty or not a string")
-                    return False
         
-        # Verify it's actual AI-generated Turkish text (not just echoing input)
-        fb_caption = post['fbCaption']
-        print(f"\nFacebook Caption (first 200 chars): {fb_caption[:200]}...")
-        
-        if len(fb_caption) < 20:
-            print(f"❌ FAILED: fbCaption too short, likely not AI-generated")
+        # Verify values
+        if data["configured"] != False:
+            log_test("GET /api/youtube/status", "FAIL", f"Expected configured:false, got {data['configured']}")
             return False
         
-        # Check if it contains Turkish characters or common Turkish words
-        turkish_indicators = ['ı', 'ş', 'ğ', 'ü', 'ö', 'ç', 'için', 'ile', 've', 'bu']
-        has_turkish = any(indicator in fb_caption.lower() for indicator in turkish_indicators)
+        if data["replyEnabled"] != False:
+            log_test("GET /api/youtube/status", "FAIL", f"Expected replyEnabled:false, got {data['replyEnabled']}")
+            return False
         
-        if not has_turkish:
-            print(f"⚠️  WARNING: Content doesn't appear to be in Turkish")
+        if data["channelId"] != "":
+            log_test("GET /api/youtube/status", "FAIL", f"Expected channelId:'', got '{data['channelId']}'")
+            return False
         
-        print(f"\n✅ PASSED: AI Content Generation working!")
-        print(f"   - All required fields present")
-        print(f"   - Non-empty captions generated")
-        print(f"   - Hashtags array: {post['hashtags']}")
-        print(f"   - EMERGENT_LLM_KEY + emergentintegrations VERIFIED WORKING")
+        if not isinstance(data["capturedLeads"], int):
+            log_test("GET /api/youtube/status", "FAIL", f"capturedLeads should be a number, got {type(data['capturedLeads'])}")
+            return False
         
-        # Store the post ID for later tests
-        global created_post_id
-        created_post_id = post.get('id')
-        
+        log_test("GET /api/youtube/status", "PASS", 
+                f"configured={data['configured']}, replyEnabled={data['replyEnabled']}, "
+                f"channelId='{data['channelId']}', capturedLeads={data['capturedLeads']}")
         return True
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
-        import traceback
-        traceback.print_exc()
+        log_test("GET /api/youtube/status", "FAIL", f"Exception: {str(e)}")
         return False
 
-def test_ai_vision():
-    """Test 6: AI Vision OCR (CRITICAL - gpt-4o vision)"""
-    print("\n" + "="*80)
-    print("TEST 6: AI Vision OCR (CRITICAL)")
-    print("="*80)
-    
+def test_youtube_simulate_price_inquiry():
+    """Test 3: POST /api/youtube/simulate with price inquiry -> creates Lead with YOUTUBE_COMMENT platform"""
     try:
-        print(f"\n--- Testing POST /api/audit/vision ---")
+        payload = {
+            "message": "Bu urunun fiyati ne kadar, nerede satiyorsunuz?",
+            "userName": "YT Test"
+        }
         
-        # Create a small test image
-        test_image = create_test_image_base64()
-        print(f"Created test image (base64 length: {len(test_image)} chars)")
-        
-        response = requests.post(
-            f"{BASE_URL}/audit/vision",
-            json={"image": test_image},
-            timeout=30  # Vision calls may take longer
-        )
-        print(f"Status Code: {response.status_code}")
+        response = requests.post(f"{BASE_URL}/youtube/simulate", json=payload, timeout=10)
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            print(f"Response: {response.text}")
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", 
+                    f"Expected 200, got {response.status_code}")
             return False
         
-        analysis = response.json()
-        print(f"\nAnalysis response keys: {list(analysis.keys())}")
-        print(f"Full response: {json.dumps(analysis, indent=2)}")
+        data = response.json()
         
-        # Check for analysis object structure
-        if 'score' not in analysis:
-            print(f"❌ FAILED: Missing 'score' field")
+        # Check response structure
+        if not data.get("ok"):
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", "Response ok is not true")
             return False
         
-        # Should have issues or recommendations (or both)
-        has_structure = 'issues' in analysis or 'recommendations' in analysis
-        if not has_structure:
-            print(f"❌ FAILED: Missing 'issues' or 'recommendations' fields")
+        if not data.get("simulated"):
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", "Response simulated is not true")
             return False
         
-        print(f"\n✅ PASSED: AI Vision working!")
-        print(f"   - Score: {analysis.get('score')}")
-        print(f"   - No crash, JSON returned")
-        print(f"   - Vision API integration verified")
+        if "processed" not in data or not isinstance(data["processed"], list) or len(data["processed"]) == 0:
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", "Missing or empty processed array")
+            return False
         
+        processed = data["processed"][0]
+        
+        # Verify sentiment
+        if processed.get("sentiment") != "PRICE_INQUIRY":
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", 
+                    f"Expected sentiment='PRICE_INQUIRY', got '{processed.get('sentiment')}'")
+            return False
+        
+        # Verify matched
+        if processed.get("matched") != True:
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", 
+                    f"Expected matched=true, got {processed.get('matched')}")
+            return False
+        
+        # Verify replySent is false (OAuth missing)
+        if processed.get("replySent") != False:
+            log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", 
+                    f"Expected replySent=false (OAuth missing), got {processed.get('replySent')}")
+            return False
+        
+        log_test("POST /api/youtube/simulate (price inquiry)", "PASS", 
+                f"sentiment={processed['sentiment']}, matched={processed['matched']}, "
+                f"replySent={processed['replySent']}, user={processed.get('user')}")
         return True
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
-        import traceback
-        traceback.print_exc()
+        log_test("POST /api/youtube/simulate (price inquiry)", "FAIL", f"Exception: {str(e)}")
         return False
 
-def test_comment_to_dm_engine():
-    """Test 7: Comment-to-DM Engine (CRITICAL)"""
-    print("\n" + "="*80)
-    print("TEST 7: Comment-to-DM Engine + Simulator (CRITICAL)")
-    print("="*80)
-    
-    # Test price inquiry
+def test_youtube_simulate_general():
+    """Test 4: POST /api/youtube/simulate with general message -> matched false, sentiment GENERAL"""
     try:
-        print(f"\n--- Testing POST /api/simulate/comment (PRICE_INQUIRY) ---")
-        
-        price_comment = {
-            "message": "Bu masanin fiyati kaç tl acaba?",
-            "userName": "Mehmet Test"
+        payload = {
+            "message": "Cok guzel video olmus",
+            "userName": "YT General User"
         }
         
-        response = requests.post(
-            f"{BASE_URL}/simulate/comment",
-            json=price_comment,
-            timeout=15
-        )
-        print(f"Status Code: {response.status_code}")
+        response = requests.post(f"{BASE_URL}/youtube/simulate", json=payload, timeout=10)
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            print(f"Response: {response.text}")
+            log_test("POST /api/youtube/simulate (general)", "FAIL", 
+                    f"Expected 200, got {response.status_code}")
             return False
         
-        result = response.json()
-        print(f"Response: {json.dumps(result, indent=2)}")
+        data = response.json()
         
-        if not result.get('processed') or len(result['processed']) == 0:
-            print(f"❌ FAILED: No processed results")
+        if not data.get("ok") or not data.get("simulated"):
+            log_test("POST /api/youtube/simulate (general)", "FAIL", "Response ok/simulated not true")
             return False
         
-        processed = result['processed'][0]
-        if processed.get('sentiment') != 'PRICE_INQUIRY':
-            print(f"❌ FAILED: Expected sentiment 'PRICE_INQUIRY', got {processed.get('sentiment')}")
+        if "processed" not in data or len(data["processed"]) == 0:
+            log_test("POST /api/youtube/simulate (general)", "FAIL", "Missing or empty processed array")
             return False
         
-        print(f"✅ Price inquiry detected correctly")
+        processed = data["processed"][0]
+        
+        # Verify sentiment
+        if processed.get("sentiment") != "GENERAL":
+            log_test("POST /api/youtube/simulate (general)", "FAIL", 
+                    f"Expected sentiment='GENERAL', got '{processed.get('sentiment')}'")
+            return False
+        
+        # Verify matched is false
+        if processed.get("matched") != False:
+            log_test("POST /api/youtube/simulate (general)", "FAIL", 
+                    f"Expected matched=false, got {processed.get('matched')}")
+            return False
+        
+        log_test("POST /api/youtube/simulate (general)", "PASS", 
+                f"sentiment={processed['sentiment']}, matched={processed['matched']}, "
+                f"user={processed.get('user')}")
+        return True
         
     except Exception as e:
-        print(f"❌ FAILED: Price inquiry exception - {str(e)}")
+        log_test("POST /api/youtube/simulate (general)", "FAIL", f"Exception: {str(e)}")
         return False
-    
-    # Test general comment
+
+def test_leads_include_youtube():
+    """Test 5: GET /api/leads -> includes at least one lead with platform === "YOUTUBE_COMMENT" """
     try:
-        print(f"\n--- Testing POST /api/simulate/comment (GENERAL) ---")
-        
-        general_comment = {
-            "message": "Cok guzel olmus",
-            "userName": "Ayse Test"
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/simulate/comment",
-            json=general_comment,
-            timeout=15
-        )
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        result = response.json()
-        processed = result['processed'][0]
-        
-        if processed.get('sentiment') != 'GENERAL':
-            print(f"❌ FAILED: Expected sentiment 'GENERAL', got {processed.get('sentiment')}")
-            return False
-        
-        print(f"✅ General comment detected correctly")
-        
-    except Exception as e:
-        print(f"❌ FAILED: General comment exception - {str(e)}")
-        return False
-    
-    # Verify leads were created
-    try:
-        print(f"\n--- Verifying leads in GET /api/leads ---")
-        
         response = requests.get(f"{BASE_URL}/leads", timeout=10)
-        print(f"Status Code: {response.status_code}")
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            log_test("GET /api/leads (YouTube leads)", "FAIL", f"Expected 200, got {response.status_code}")
             return False
         
-        leads = response.json()
-        if not isinstance(leads, list):
-            print(f"❌ FAILED: Expected array, got {type(leads)}")
+        data = response.json()
+        
+        if not isinstance(data, list):
+            log_test("GET /api/leads (YouTube leads)", "FAIL", "Response is not an array")
             return False
         
-        # Find our test leads (newest first)
-        mehmet_lead = next((l for l in leads if l.get('userName') == 'Mehmet Test'), None)
-        ayse_lead = next((l for l in leads if l.get('userName') == 'Ayse Test'), None)
+        # Find YouTube leads
+        youtube_leads = [lead for lead in data if lead.get("platform") == "YOUTUBE_COMMENT"]
         
-        if not mehmet_lead:
-            print(f"❌ FAILED: Mehmet Test lead not found")
+        if len(youtube_leads) == 0:
+            log_test("GET /api/leads (YouTube leads)", "FAIL", 
+                    "No leads with platform='YOUTUBE_COMMENT' found")
             return False
         
-        if not ayse_lead:
-            print(f"❌ FAILED: Ayse Test lead not found")
-            return False
+        # Verify the first YouTube lead has required fields
+        yt_lead = youtube_leads[0]
+        required_fields = ["userName", "userMessage", "sentiment", "platform"]
+        for field in required_fields:
+            if field not in yt_lead:
+                log_test("GET /api/leads (YouTube leads)", "FAIL", 
+                        f"YouTube lead missing required field: {field}")
+                return False
         
-        # Verify fields
-        required_fields = ['userName', 'userMessage', 'sentiment', 'platform']
-        for lead in [mehmet_lead, ayse_lead]:
-            for field in required_fields:
-                if field not in lead:
-                    print(f"❌ FAILED: Lead missing field '{field}'")
-                    return False
-        
-        if mehmet_lead.get('platform') != 'FACEBOOK_COMMENT':
-            print(f"❌ FAILED: Wrong platform for Mehmet lead")
-            return False
-        
-        print(f"✅ Leads created correctly with all required fields")
-        
-        # Test lead update
-        print(f"\n--- Testing PUT /api/leads/:id ---")
-        lead_id = mehmet_lead['id']
-        
-        response = requests.put(
-            f"{BASE_URL}/leads/{lead_id}",
-            json={"status": "CONTACTED"},
-            timeout=10
-        )
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            return False
-        
-        updated_lead = response.json()
-        if updated_lead.get('status') != 'CONTACTED':
-            print(f"❌ FAILED: Lead status not updated")
-            return False
-        
-        print(f"✅ Lead updated successfully")
-        print("\n✅ PASSED: Comment-to-DM Engine fully working!")
-        
+        log_test("GET /api/leads (YouTube leads)", "PASS", 
+                f"Found {len(youtube_leads)} YouTube leads. First lead: userName='{yt_lead['userName']}', "
+                f"sentiment={yt_lead['sentiment']}, message='{yt_lead['userMessage'][:50]}...'")
         return True
         
     except Exception as e:
-        print(f"❌ FAILED: Leads verification exception - {str(e)}")
+        log_test("GET /api/leads (YouTube leads)", "FAIL", f"Exception: {str(e)}")
         return False
 
-def test_content_publish():
-    """Test 8: Content publish"""
-    print("\n" + "="*80)
-    print("TEST 8: Content Publish")
-    print("="*80)
-    
+def test_stats_youtube_leads():
+    """Test 6: GET /api/stats -> includes youtubeLeads count >= 1"""
     try:
-        # First, get a content post to publish
-        print(f"\n--- Getting content posts ---")
-        response = requests.get(f"{BASE_URL}/content", timeout=10)
+        response = requests.get(f"{BASE_URL}/stats", timeout=10)
         
         if response.status_code != 200:
-            print(f"❌ FAILED: Could not get content posts")
+            log_test("GET /api/stats (youtubeLeads)", "FAIL", f"Expected 200, got {response.status_code}")
             return False
         
-        posts = response.json()
-        if not posts or len(posts) == 0:
-            print(f"❌ FAILED: No content posts available to publish")
+        data = response.json()
+        
+        if "youtubeLeads" not in data:
+            log_test("GET /api/stats (youtubeLeads)", "FAIL", "Missing 'youtubeLeads' field")
             return False
         
-        post_id = posts[0]['id']
-        print(f"Using post ID: {post_id}")
-        
-        # Publish it
-        print(f"\n--- Testing POST /api/content/publish ---")
-        response = requests.post(
-            f"{BASE_URL}/content/publish",
-            json={"id": post_id},
-            timeout=10
-        )
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ FAILED: Expected 200, got {response.status_code}")
-            print(f"Response: {response.text}")
+        if not isinstance(data["youtubeLeads"], int):
+            log_test("GET /api/stats (youtubeLeads)", "FAIL", 
+                    f"youtubeLeads should be a number, got {type(data['youtubeLeads'])}")
             return False
         
-        published_post = response.json()
-        if published_post.get('status') != 'PUBLISHED':
-            print(f"❌ FAILED: Status not set to PUBLISHED, got {published_post.get('status')}")
+        if data["youtubeLeads"] < 1:
+            log_test("GET /api/stats (youtubeLeads)", "FAIL", 
+                    f"Expected youtubeLeads >= 1, got {data['youtubeLeads']}")
             return False
         
-        print(f"✅ PASSED: Content publish working correctly")
+        log_test("GET /api/stats (youtubeLeads)", "PASS", 
+                f"youtubeLeads={data['youtubeLeads']}, totalLeads={data.get('totalLeads')}")
         return True
         
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
+        log_test("GET /api/stats (youtubeLeads)", "FAIL", f"Exception: {str(e)}")
         return False
 
-def test_expected_errors():
-    """Test 9: Expected error checks (should return clean JSON errors, not crash)"""
-    print("\n" + "="*80)
-    print("TEST 9: Expected Error Handling (Meta/Telegram without tokens)")
-    print("="*80)
-    
-    all_passed = True
-    
-    # Test audit/crawl
+def test_youtube_scan_expected_error():
+    """Test 7: POST /api/youtube/scan {} -> EXPECTED clean 400 JSON error (not a crash)"""
     try:
-        print(f"\n--- Testing POST /api/audit/crawl (expected error) ---")
+        response = requests.post(f"{BASE_URL}/youtube/scan", json={}, timeout=10)
         
-        # First get a page
-        response = requests.get(f"{BASE_URL}/pages", timeout=10)
-        pages = response.json()
+        # Should return 400 error
+        if response.status_code != 400:
+            log_test("POST /api/youtube/scan (expected error)", "FAIL", 
+                    f"Expected 400 error, got {response.status_code}")
+            return False
         
-        if not pages or len(pages) == 0:
-            print(f"⚠️  SKIPPED: No pages available to test crawl")
-        else:
-            page_id = pages[0]['id']
-            response = requests.post(
-                f"{BASE_URL}/audit/crawl",
-                json={"pageId": page_id},
-                timeout=10
-            )
-            print(f"Status Code: {response.status_code}")
-            
-            # Should be 400 or 502 with clean error message
-            if response.status_code not in [400, 502]:
-                print(f"⚠️  WARNING: Expected 400 or 502, got {response.status_code}")
-            
-            try:
-                error_data = response.json()
-                if 'error' in error_data:
-                    print(f"✅ Clean JSON error returned: {error_data['error']}")
-                else:
-                    print(f"⚠️  WARNING: No 'error' field in response")
-            except:
-                print(f"❌ FAILED: Response is not valid JSON (crashed)")
-                all_passed = False
-                
+        # Should be valid JSON
+        try:
+            data = response.json()
+        except:
+            log_test("POST /api/youtube/scan (expected error)", "FAIL", 
+                    "Response is not valid JSON (crashed)")
+            return False
+        
+        # Should have error field
+        if "error" not in data:
+            log_test("POST /api/youtube/scan (expected error)", "FAIL", 
+                    "Response missing 'error' field")
+            return False
+        
+        # Check error message mentions YOUTUBE_API_KEY
+        error_msg = data["error"]
+        if "YOUTUBE_API_KEY" not in error_msg:
+            log_test("POST /api/youtube/scan (expected error)", "FAIL", 
+                    f"Error message should mention YOUTUBE_API_KEY, got: {error_msg}")
+            return False
+        
+        log_test("POST /api/youtube/scan (expected error)", "PASS", 
+                f"Clean 400 JSON error as expected: '{error_msg}'")
+        return True
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
-        all_passed = False
-    
-    # Test telegram approval
+        log_test("POST /api/youtube/scan (expected error)", "FAIL", f"Exception: {str(e)}")
+        return False
+
+def test_youtube_publish_expected_error():
+    """Test 8: POST /api/youtube/publish {} -> EXPECTED clean 501 JSON with OAUTH_REQUIRED (not a crash)"""
     try:
-        print(f"\n--- Testing POST /api/content/telegram-approval (expected error) ---")
+        response = requests.post(f"{BASE_URL}/youtube/publish", json={}, timeout=10)
         
-        # Get a content post
-        response = requests.get(f"{BASE_URL}/content", timeout=10)
-        posts = response.json()
+        # Should return 501 error
+        if response.status_code != 501:
+            log_test("POST /api/youtube/publish (expected error)", "FAIL", 
+                    f"Expected 501 error, got {response.status_code}")
+            return False
         
-        if not posts or len(posts) == 0:
-            print(f"⚠️  SKIPPED: No content posts available")
-        else:
-            post_id = posts[0]['id']
-            response = requests.post(
-                f"{BASE_URL}/content/telegram-approval",
-                json={"id": post_id},
-                timeout=10
-            )
-            print(f"Status Code: {response.status_code}")
-            
-            # Should be 502 with clean error message
-            if response.status_code != 502:
-                print(f"⚠️  WARNING: Expected 502, got {response.status_code}")
-            
-            try:
-                error_data = response.json()
-                if 'error' in error_data:
-                    print(f"✅ Clean JSON error returned: {error_data['error']}")
-                else:
-                    print(f"⚠️  WARNING: No 'error' field in response")
-            except:
-                print(f"❌ FAILED: Response is not valid JSON (crashed)")
-                all_passed = False
-                
+        # Should be valid JSON
+        try:
+            data = response.json()
+        except:
+            log_test("POST /api/youtube/publish (expected error)", "FAIL", 
+                    "Response is not valid JSON (crashed)")
+            return False
+        
+        # Should have error field with OAUTH_REQUIRED
+        if "error" not in data:
+            log_test("POST /api/youtube/publish (expected error)", "FAIL", 
+                    "Response missing 'error' field")
+            return False
+        
+        if data["error"] != "OAUTH_REQUIRED":
+            log_test("POST /api/youtube/publish (expected error)", "FAIL", 
+                    f"Expected error='OAUTH_REQUIRED', got '{data['error']}'")
+            return False
+        
+        # Should have Turkish message
+        if "message" not in data:
+            log_test("POST /api/youtube/publish (expected error)", "FAIL", 
+                    "Response missing 'message' field")
+            return False
+        
+        log_test("POST /api/youtube/publish (expected error)", "PASS", 
+                f"Clean 501 JSON error as expected: error='{data['error']}', message='{data['message'][:80]}...'")
+        return True
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {str(e)}")
-        all_passed = False
-    
-    if all_passed:
-        print(f"\n✅ PASSED: All expected errors return clean JSON (no crashes)")
-    
-    return all_passed
+        log_test("POST /api/youtube/publish (expected error)", "FAIL", f"Exception: {str(e)}")
+        return False
 
 def main():
-    """Run all tests"""
-    print("\n" + "="*80)
-    print("COMMAND COCKPIT BACKEND API TEST SUITE")
-    print("="*80)
+    """Run all YouTube endpoint tests"""
+    print("=" * 80)
+    print("BACKEND TEST SUITE - YouTube Endpoints")
+    print("=" * 80)
     print(f"Base URL: {BASE_URL}")
-    print("="*80)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
     
-    results = {}
+    tests = [
+        ("Config YouTube Integration", test_config_youtube_integration),
+        ("YouTube Status", test_youtube_status),
+        ("YouTube Simulate Price Inquiry", test_youtube_simulate_price_inquiry),
+        ("YouTube Simulate General", test_youtube_simulate_general),
+        ("Leads Include YouTube", test_leads_include_youtube),
+        ("Stats YouTube Leads", test_stats_youtube_leads),
+        ("YouTube Scan Expected Error", test_youtube_scan_expected_error),
+        ("YouTube Publish Expected Error", test_youtube_publish_expected_error),
+    ]
     
-    # Run all tests in order
-    results['1_health'] = test_health_endpoint()
-    results['2_config'] = test_config_endpoint()
-    results['3_stats_logs'] = test_stats_and_logs()
-    results['4_page_crud'] = test_facebook_page_crud()
-    results['5_ai_content'] = test_ai_content_generation()
-    results['6_ai_vision'] = test_ai_vision()
-    results['7_comment_dm'] = test_comment_to_dm_engine()
-    results['8_publish'] = test_content_publish()
-    results['9_expected_errors'] = test_expected_errors()
+    results = []
+    for test_name, test_func in tests:
+        result = test_func()
+        results.append((test_name, result))
     
     # Summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST SUMMARY")
-    print("="*80)
+    print("=" * 80)
     
-    passed = sum(1 for v in results.values() if v)
+    passed = sum(1 for _, result in results if result)
     total = len(results)
     
-    for test_name, result in results.items():
-        status = "✅ PASSED" if result else "❌ FAILED"
-        print(f"{test_name}: {status}")
+    for test_name, result in results:
+        status = "✅ PASS" if result else "❌ FAIL"
+        print(f"{status} - {test_name}")
     
-    print("="*80)
+    print("=" * 80)
     print(f"TOTAL: {passed}/{total} tests passed")
-    print("="*80)
+    print("=" * 80)
     
-    if passed == total:
-        print("\n🎉 ALL TESTS PASSED! Backend is fully functional.")
-        return 0
-    else:
-        print(f"\n⚠️  {total - passed} test(s) failed. See details above.")
-        return 1
+    # Exit with appropriate code
+    sys.exit(0 if passed == total else 1)
 
 if __name__ == "__main__":
-    exit(main())
+    main()
