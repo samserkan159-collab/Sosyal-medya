@@ -36,9 +36,10 @@ import {
   uploadShort, replyComment, redirectUri,
 } from '@/lib/googleoauth'
 import { publishFacebookReel } from '@/lib/fbreels'
+import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, PRESETS, presetPath } from '@/lib/reels'
 import { transcribeAudio } from '@/lib/ai'
-import { getSchedulerState, startScheduler, stopScheduler, setLast } from '@/lib/scheduler'
+import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
 import fs from 'fs'
 import fsp from 'fs/promises'
@@ -133,6 +134,7 @@ function integrationsStatus() {
     google: googleConfigured(),
     bgRemoval: bgConfigured(),
     bgProvider: bgProvider(),
+    instagram: igConfigured(),
     verifyToken: process.env.META_VERIFY_TOKEN || '',
     graphVersion: process.env.META_GRAPH_VERSION || 'v21.0',
   }
@@ -281,7 +283,7 @@ async function scanAll(database) {
   return summary
 }
 
-// Scheduler'i (varsa) baslat - ilk istekte bir kez
+// Zamanlanmis paylasim worker'i (her dakika) - schedulerInit ile bir kez
 let schedulerInit = false
 async function ensureScheduler(database) {
   if (schedulerInit) return
@@ -292,6 +294,57 @@ async function ensureScheduler(database) {
       startScheduler(process.env.CRON_SCAN_SCHEDULE || '*/15 * * * *', () => scanAll(database))
     }
   } catch (e) {}
+  // Zamanli paylasim her zaman aktif
+  startScheduleWorker(() => processDueSchedules(database))
+}
+
+// ================= PUBLISH (birlesik) =================
+async function publishRenderTo(database, render, platform, caption) {
+  const abs = path.join(UPLOAD_DIR, render.outFile)
+  if (!fs.existsSync(abs)) throw new Error('Video dosyasi bulunamadi')
+  if (platform === 'youtube') {
+    let token = youtubeOAuthToken()
+    if (!token) { try { token = await getValidAccessToken(database) } catch (e) {} }
+    if (!token) throw new Error('OAUTH_REQUIRED: YouTube kanali baglanmamis')
+    const r = await uploadShort(token, abs, caption || render.title || 'Reels', caption || render.description || '')
+    return { youtube: r.id }
+  }
+  if (platform === 'facebook') {
+    const page = await database.collection('facebook_pages').findOne({})
+    const pid = page?.pageId || process.env.PAGE_ID
+    const tok = page?.accessToken || process.env.PAGE_ACCESS_TOKEN
+    if (!pid || !tok) throw new Error('PAGE_ID / PAGE_ACCESS_TOKEN tanimli degil')
+    const r = await publishFacebookReel(abs, caption || render.description || '', pid, tok)
+    return { facebook: r.video_id }
+  }
+  if (platform === 'instagram') {
+    if (!igConfigured()) throw new Error('IG_USER_ID / PAGE_ACCESS_TOKEN tanimli degil')
+    const videoUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/api/media?dir=uploads&file=${render.outFile}`
+    const r = await publishInstagramReel({ videoUrl, caption: caption || render.description || '' })
+    return { instagram: r.id }
+  }
+  throw new Error('bilinmeyen platform: ' + platform)
+}
+
+async function processDueSchedules(database) {
+  const now = new Date()
+  const due = await database.collection('schedules').find({ status: 'PENDING', scheduledAt: { $lte: now } }).limit(5).toArray()
+  for (const s of due) {
+    await database.collection('schedules').updateOne({ id: s.id }, { $set: { status: 'PUBLISHING', updatedAt: new Date() } })
+    const render = await database.collection('renders').findOne({ id: s.jobId })
+    const results = {}
+    let ok = true
+    if (!render) { ok = false; results.error = 'render bulunamadi' }
+    else {
+      for (const pf of s.platforms || []) {
+        try { Object.assign(results, await publishRenderTo(database, render, pf, s.caption)) }
+        catch (e) { ok = false; results[pf] = 'HATA: ' + e.message }
+      }
+    }
+    await database.collection('schedules').updateOne({ id: s.id }, { $set: { status: ok ? 'PUBLISHED' : 'FAILED', results, publishedAt: new Date(), updatedAt: new Date() } })
+    await log('SCHEDULER', ok ? 'INFO' : 'ERROR', `Zamanli paylasim islendi (${ok ? 'ok' : 'hata'})`, { id: s.id, results })
+  }
+  return due.length
 }
 
 // ================= TELEGRAM WEBHOOK =================
@@ -1107,6 +1160,63 @@ async function handleRoute(request, { params }) {
         await log('META_WEBHOOK', 'ERROR', 'Facebook Reel hatasi', { error: e.message })
         return json({ error: e.message }, 502)
       }
+    }
+
+    // ================= PUBLISH: Instagram Reel =================
+    if (route === '/reels/publish-ig' && method === 'POST') {
+      const b = await request.json()
+      const render = b.jobId ? await database.collection('renders').findOne({ id: b.jobId }) : null
+      if (!render) return json({ error: 'jobId zorunlu / render bulunamadi' }, 400)
+      if (!igConfigured()) return json({ error: 'IG_USER_ID / PAGE_ACCESS_TOKEN tanimli degil' }, 501)
+      try {
+        const res = await publishRenderTo(database, render, 'instagram', b.caption)
+        await log('META_WEBHOOK', 'INFO', 'Instagram Reel yayinlandi', res)
+        return json({ ok: true, ...res })
+      } catch (e) {
+        await log('META_WEBHOOK', 'ERROR', 'Instagram Reel hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // ================= SCHEDULE (Zamanlanmis Paylasim) =================
+    if (route === '/schedule' && method === 'GET') {
+      const list = await database.collection('schedules').find({}).sort({ scheduledAt: 1 }).limit(200).toArray()
+      return json(list.map(strip))
+    }
+    if (route === '/schedule' && method === 'POST') {
+      const b = await request.json()
+      if (!b.jobId || !b.scheduledAt || !Array.isArray(b.platforms) || !b.platforms.length) {
+        return json({ error: 'jobId, scheduledAt ve platforms zorunlu' }, 400)
+      }
+      const render = await database.collection('renders').findOne({ id: b.jobId })
+      if (!render) return json({ error: 'Render bulunamadi' }, 400)
+      const doc = {
+        id: uuidv4(),
+        jobId: b.jobId,
+        outFile: render.outFile,
+        platforms: b.platforms,
+        caption: b.caption || '',
+        scheduledAt: new Date(b.scheduledAt),
+        status: 'PENDING',
+        results: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      await database.collection('schedules').insertOne(doc)
+      await log('SCHEDULER', 'INFO', 'Yeni zamanli paylasim', { id: doc.id, at: doc.scheduledAt })
+      return json(strip(doc))
+    }
+    if (route.startsWith('/schedule/') && pathSegments[2] === 'publish-now' && method === 'POST') {
+      const id = pathSegments[1]
+      await database.collection('schedules').updateOne({ id }, { $set: { scheduledAt: new Date(), status: 'PENDING', updatedAt: new Date() } })
+      await processDueSchedules(database)
+      const doc = await database.collection('schedules').findOne({ id })
+      return json(doc ? strip(doc) : { ok: true })
+    }
+    if (route.startsWith('/schedule/') && method === 'DELETE') {
+      const id = pathSegments[1]
+      await database.collection('schedules').deleteOne({ id })
+      return json({ ok: true })
     }
 
     // ================= CRON =================

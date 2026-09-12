@@ -17,7 +17,7 @@ import {
 import {
   LayoutDashboard, ShieldCheck, Sparkles, Users, Settings2, Facebook, Instagram,
   Youtube, Copy, RefreshCw, Send, Plus, Zap, MessageSquare, CheckCircle2, XCircle,
-  Upload, Wand2, Phone, Info, TrendingUp, AlertTriangle, Radio, Menu,
+  Upload, Wand2, Phone, Info, TrendingUp, AlertTriangle, Radio, Menu, CalendarClock, Trash2,
 } from 'lucide-react'
 
 const MEDIA = [
@@ -70,6 +70,7 @@ const NAV = [
   { id: 'overview', label: 'Genel Bakis', icon: LayoutDashboard },
   { id: 'audit', label: 'FB Denetim', icon: ShieldCheck },
   { id: 'content', label: 'Icerik Fabrikasi', icon: Sparkles },
+  { id: 'schedule', label: 'Takvim', icon: CalendarClock },
   { id: 'leads', label: 'Musteri Masasi', icon: Users },
   { id: 'settings', label: 'Ayarlar', icon: Settings2 },
 ]
@@ -190,6 +191,7 @@ export default function App() {
           {tab === 'overview' && <Overview stats={stats} config={config} onSimulate={refreshAll} pageId={pageId} />}
           {tab === 'audit' && <AuditModule pages={pages} pageId={pageId} config={config} onPageAdded={refreshAll} />}
           {tab === 'content' && <ContentModule pageId={pageId} config={config} loadContent={loadContent} />}
+          {tab === 'schedule' && <ScheduleModule />}
           {tab === 'leads' && <LeadsModule leads={leads} reload={loadLeads} />}
           {tab === 'settings' && <SettingsModule page={selectedPage} config={config} reload={refreshAll} />}
         </div>
@@ -768,5 +770,63 @@ function SettingsModule({ page, config, reload }) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+
+// ==================== SCHEDULE (Takvim) ====================
+const schedStatusColor = {
+  PENDING: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
+  PUBLISHING: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+  PUBLISHED: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  FAILED: 'bg-red-500/15 text-red-400 border-red-500/30',
+}
+
+function ScheduleModule() {
+  const [items, setItems] = useState([])
+  const load = async () => { try { setItems(await api('/schedule')) } catch (e) { toast.error(e.message) } }
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t) }, [])
+
+  const del = async (id) => { try { await api(`/schedule/${id}`, { method: 'DELETE' }); toast.success('Silindi'); load() } catch (e) { toast.error(e.message) } }
+  const now = async (id) => { try { await api(`/schedule/${id}/publish-now`, { method: 'POST' }); toast.success('Yayin tetiklendi'); load() } catch (e) { toast.error(e.message) } }
+
+  const fmt = (d) => new Date(d).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })
+
+  return (
+    <Card className="border-zinc-800 bg-zinc-900/70">
+      <CardHeader><CardTitle className="flex items-center gap-2 text-base"><CalendarClock className="h-4 w-4 text-indigo-400" /> Zamanlanmis Paylasim Takvimi</CardTitle></CardHeader>
+      <CardContent>
+        {items.length ? (
+          <div className="space-y-2">
+            {items.map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 flex-col items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-300"><CalendarClock className="h-5 w-5" /></div>
+                  <div>
+                    <p className="text-sm font-medium">{fmt(s.scheduledAt)}</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {(s.platforms || []).map((p) => (
+                        <Badge key={p} variant="outline" className="border-zinc-700 text-[10px] capitalize text-zinc-400">
+                          {p === 'youtube' ? <Youtube className="mr-1 inline h-3 w-3 text-red-400" /> : p === 'facebook' ? <Facebook className="mr-1 inline h-3 w-3 text-blue-400" /> : <Instagram className="mr-1 inline h-3 w-3 text-fuchsia-400" />} {p}
+                        </Badge>
+                      ))}
+                    </div>
+                    {s.caption && <p className="mt-1 max-w-md truncate text-xs text-zinc-500">{s.caption}</p>}
+                    {s.results && <p className="mt-1 max-w-md truncate text-[10px] text-zinc-600">{JSON.stringify(s.results)}</p>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className={schedStatusColor[s.status] || 'border-zinc-700 text-zinc-400'}>{s.status}</Badge>
+                  {s.status === 'PENDING' && <Button size="sm" onClick={() => now(s.id)} className="bg-emerald-600 text-xs hover:bg-emerald-500">Simdi Yayinla</Button>}
+                  <Button size="sm" variant="ghost" onClick={() => del(s.id)} className="text-red-400 hover:bg-red-950/40"><Trash2 className="h-4 w-4" /></Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-10 text-center text-sm text-zinc-600">Henuz zamanlanmis paylasim yok. "Icerik Fabrikasi &gt; Afis & Reels Studyosu"nda bir Reels uretip zamanlayin.</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
