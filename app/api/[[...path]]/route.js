@@ -38,6 +38,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
+import { probeDuration, trimVideo } from '@/lib/video'
 import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
@@ -1006,6 +1007,104 @@ async function handleRoute(request, { params }) {
       const id = pathSegments[2]
       await database.collection('studio_logos').deleteOne({ id })
       return json({ ok: true })
+    }
+
+    // ================= VIDEO KESICI (trim & split) =================
+    // Parcali (chunked) video yukleme - proxy limitlerini asmak icin
+    if (route === '/video/upload-chunk' && method === 'POST') {
+      ensureDirs()
+      const form = await request.formData()
+      const uploadId = safeName(String(form.get('uploadId') || ''))
+      const index = Number(form.get('index') || 0)
+      const isFinal = String(form.get('final') || '') === 'true'
+      const ext = safeName(String(form.get('ext') || 'mp4')).replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'mp4'
+      const chunk = form.get('chunk')
+      if (!uploadId || !chunk || typeof chunk === 'string') return json({ error: 'uploadId ve chunk zorunlu' }, 400)
+      const file = `srcvid_${uploadId}.${ext}`
+      const abs = path.join(UPLOAD_DIR, file)
+      const buf = Buffer.from(await chunk.arrayBuffer())
+      if (index === 0) await fsp.writeFile(abs, buf)
+      else await fsp.appendFile(abs, buf)
+      if (!isFinal) return json({ ok: true, received: index })
+      // final: sureyi olc
+      try {
+        const duration = await probeDuration(abs)
+        return json({ ok: true, file, url: `/api/media?dir=uploads&file=${file}`, duration })
+      } catch (e) {
+        return json({ error: 'Video okunamadi: ' + e.message }, 502)
+      }
+    }
+
+    // Video kes (trim) - tek parca; renders kaydi olusturarak paylasim akisina baglanir
+    if (route === '/video/trim' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      const start = Number(b.start) || 0
+      const end = Number(b.end)
+      if (!(end > start)) return json({ error: 'bitis, baslangictan buyuk olmali' }, 400)
+      ensureDirs()
+      const id = uuidv4()
+      const outFile = `cut_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      try {
+        await trimVideo({ inputPath: inAbs, start, end, outPath: outAbs })
+        const doc = {
+          id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`,
+          source: 'video-trim', duration: Number((end - start).toFixed(2)), title: b.title || '', description: b.description || '',
+          error: null, createdAt: new Date(), updatedAt: new Date(),
+        }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Video kesildi', { id, start, end })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration: doc.duration })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Video kesme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Video bol (split) - esit parca (parts) veya nokta listesi (points saniye)
+    if (route === '/video/split' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      let total
+      try { total = await probeDuration(inAbs) } catch (e) { return json({ error: 'sure okunamadi: ' + e.message }, 502) }
+      // sinir noktalarini olustur
+      let bounds = [0]
+      if (Array.isArray(b.points) && b.points.length) {
+        const pts = b.points.map(Number).filter((n) => n > 0 && n < total).sort((a, c) => a - c)
+        bounds = [0, ...pts, total]
+      } else {
+        const parts = Math.max(2, Math.min(10, Number(b.parts) || 2))
+        for (let i = 1; i <= parts; i++) bounds.push(Number(((total * i) / parts).toFixed(3)))
+      }
+      // ardisik ikilileri kes
+      const segments = []
+      try {
+        for (let i = 0; i < bounds.length - 1; i++) {
+          const s = bounds[i], e = bounds[i + 1]
+          if (!(e - s > 0.2)) continue
+          const id = uuidv4()
+          const outFile = `split_${id}.mp4`
+          await trimVideo({ inputPath: inAbs, start: s, end: e, outPath: path.join(UPLOAD_DIR, outFile) })
+          const doc = {
+            id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`,
+            source: 'video-split', duration: Number((e - s).toFixed(2)), title: '', description: '',
+            error: null, createdAt: new Date(), updatedAt: new Date(),
+          }
+          await database.collection('renders').insertOne(doc)
+          segments.push({ jobId: id, index: segments.length, file: outFile, url: doc.videoUrl, start: Number(s.toFixed(2)), end: Number(e.toFixed(2)), duration: doc.duration })
+        }
+        await log('AI_VISION', 'INFO', 'Video bolundu', { parts: segments.length })
+        return json({ segments })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Video bolme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
     }
 
     // Arka plan silme (Remove.bg / Photoroom)

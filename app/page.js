@@ -11,13 +11,14 @@ import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import ReelsStudio from '@/components/studio/ReelsStudio'
+import VideoCutter from '@/components/studio/VideoCutter'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from '@/components/ui/dialog'
 import {
   LayoutDashboard, ShieldCheck, Sparkles, Users, Settings2, Facebook, Instagram,
   Youtube, Copy, RefreshCw, Send, Plus, Zap, MessageSquare, CheckCircle2, XCircle,
-  Upload, Wand2, Phone, Info, TrendingUp, AlertTriangle, Radio, Menu, CalendarClock, Trash2,
+  Upload, Wand2, Phone, Info, TrendingUp, AlertTriangle, Radio, Menu, CalendarClock, Trash2, Film,
 } from 'lucide-react'
 
 const MEDIA = [
@@ -506,8 +507,11 @@ function ContentModule({ pageId, config, loadContent }) {
         <button onClick={() => setSub('studio')} className={`rounded-lg border px-4 py-2 text-sm transition ${sub === 'studio' ? 'border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-300' : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}>
           <Wand2 className="mr-1.5 inline h-4 w-4" /> Afis & Reels Studyosu
         </button>
+        <button onClick={() => setSub('cutter')} className={`rounded-lg border px-4 py-2 text-sm transition ${sub === 'cutter' ? 'border-orange-500 bg-orange-500/15 text-orange-300' : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}>
+          <Film className="mr-1.5 inline h-4 w-4" /> Video Kesici
+        </button>
       </div>
-      {sub === 'text' ? <TextGenerator pageId={pageId} loadContent={loadContent} /> : <ReelsStudio pageId={pageId} integrations={config.integrations || {}} />}
+      {sub === 'text' ? <TextGenerator pageId={pageId} loadContent={loadContent} /> : sub === 'studio' ? <ReelsStudio pageId={pageId} integrations={config.integrations || {}} /> : <VideoCutter pageId={pageId} />}
     </div>
   )
 }
