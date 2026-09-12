@@ -1,0 +1,701 @@
+import { MongoClient } from 'mongodb'
+import { v4 as uuidv4 } from 'uuid'
+import { NextResponse } from 'next/server'
+import {
+  aiConfigured,
+  generateMultiPlatform,
+  generateAuditSuggestions,
+  analyzeAuditScreenshot,
+} from '@/lib/ai'
+import {
+  crawlPage,
+  computeHealth,
+  replyToComment,
+  sendPrivateReply,
+  updatePageField,
+} from '@/lib/meta'
+import {
+  tgSendMessage,
+  tgAnswerCallback,
+  tgDownloadBase64,
+  telegramConfigured,
+  defaultChat,
+} from '@/lib/telegram'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
+// ---------- MongoDB ----------
+let client
+let db
+async function connectToMongo() {
+  if (!client) {
+    client = new MongoClient(process.env.MONGO_URL)
+    await client.connect()
+    db = client.db(process.env.DB_NAME)
+  }
+  return db
+}
+
+const strip = (doc) => {
+  if (!doc) return doc
+  const { _id, ...rest } = doc
+  return rest
+}
+
+const DEFAULT_COMMENT_TEMPLATE =
+  'Merhabalar, fiyat ve detayli katalog bilgisi ozel mesaj (Messenger) kutunuza iletildi. Hizli iletisim icin WhatsApp hattimizdan yazabilirsiniz.'
+const DEFAULT_DM_TEMPLATE =
+  'Merhaba! Paylastigimiz video ile ilgili fiyat bilgisi talep etmistiniz. Detayli bilgi ve randevu icin dogrudan ustamizla gorusebilirsiniz:'
+
+const PRICE_KEYWORDS = [
+  'fiyat', 'ucret', 'ücret', 'ne kadar', 'kaç tl', 'kac tl', 'kaç para', 'kac para',
+  'dm', 'katalog', 'bilgi', 'maliyet', 'price', 'fiyatı', 'fiyati',
+]
+
+async function log(service, level, message, details) {
+  try {
+    const database = await connectToMongo()
+    await database.collection('system_logs').insertOne({
+      id: uuidv4(),
+      service,
+      level,
+      message,
+      details: details || null,
+      createdAt: new Date(),
+    })
+  } catch (e) {
+    console.error('log error', e)
+  }
+}
+
+function cors(response) {
+  response.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
+  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH')
+  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  return response
+}
+
+function json(data, status = 200) {
+  return cors(NextResponse.json(data, { status }))
+}
+
+export async function OPTIONS() {
+  return cors(new NextResponse(null, { status: 200 }))
+}
+
+// ---------- helpers ----------
+function integrationsStatus() {
+  return {
+    ai: aiConfigured(),
+    meta: !!process.env.PAGE_ACCESS_TOKEN && !!process.env.PAGE_ID,
+    telegram: telegramConfigured(),
+    verifyToken: process.env.META_VERIFY_TOKEN || '',
+    graphVersion: process.env.META_GRAPH_VERSION || 'v21.0',
+  }
+}
+
+const REQUIRED_PERMISSIONS = [
+  'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_posts',
+  'pages_manage_metadata',
+  'pages_messaging',
+  'instagram_basic',
+  'instagram_manage_comments',
+  'instagram_manage_messages',
+]
+
+// ================= COMMENT-TO-DM ENGINE =================
+async function processMetaWebhook(database, body) {
+  const results = []
+  const entries = body.entry || []
+  for (const entry of entries) {
+    const pageId = entry.id
+    const page = await database.collection('facebook_pages').findOne({ pageId })
+    const token = page?.accessToken || process.env.PAGE_ACCESS_TOKEN
+    const commentTemplate = page?.commentTemplate || DEFAULT_COMMENT_TEMPLATE
+    const dmTemplate = page?.dmTemplate || DEFAULT_DM_TEMPLATE
+    const whatsapp = (page?.whatsappNumber || '').replace(/[^0-9]/g, '')
+    const autoReply = page ? page.autoReplyActive !== false : true
+
+    const changes = entry.changes || []
+    for (const change of changes) {
+      if (change.field !== 'feed') continue
+      const v = change.value || {}
+      if (v.item !== 'comment' || v.verb !== 'add') continue
+      // Sayfanin kendi yorumunu filtrele (dongu engelleme)
+      if (v.from && String(v.from.id) === String(pageId)) continue
+
+      const message = v.message || ''
+      const lower = message.toLowerCase()
+      const isPrice = PRICE_KEYWORDS.some((k) => lower.includes(k))
+      const sentiment = isPrice ? 'PRICE_INQUIRY' : 'GENERAL'
+
+      const lead = {
+        id: uuidv4(),
+        pageId: page?.id || null,
+        fbPageId: pageId,
+        platform: 'FACEBOOK_COMMENT',
+        externalUserId: v.from?.id || 'unknown',
+        userName: v.from?.name || 'Bilinmeyen Kullanici',
+        commentId: v.comment_id || null,
+        postId: v.post_id || null,
+        userMessage: message,
+        replySent: false,
+        dmSent: false,
+        status: 'NEW',
+        sentiment,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+
+      if (isPrice && autoReply && token && v.comment_id) {
+        // a) Public comment reply
+        try {
+          await replyToComment(v.comment_id, commentTemplate, token)
+          lead.replySent = true
+        } catch (e) {
+          await log('COMMENT_TO_DM', 'ERROR', 'Public yanit basarisiz', { error: e.message, comment: v.comment_id })
+        }
+        // b) Private Messenger DM
+        try {
+          const dmText = whatsapp ? `${dmTemplate}\nhttps://wa.me/${whatsapp}` : dmTemplate
+          await sendPrivateReply(pageId, v.comment_id, dmText, token)
+          lead.dmSent = true
+        } catch (e) {
+          await log('COMMENT_TO_DM', 'ERROR', 'Private DM basarisiz', { error: e.message, comment: v.comment_id })
+        }
+      }
+
+      // d) Lead kaydet
+      try {
+        if (v.comment_id) {
+          await database.collection('leads').updateOne(
+            { commentId: v.comment_id },
+            { $setOnInsert: lead },
+            { upsert: true }
+          )
+        } else {
+          await database.collection('leads').insertOne(lead)
+        }
+      } catch (e) {
+        await log('COMMENT_TO_DM', 'WARN', 'Lead kaydedilemedi', { error: e.message })
+      }
+
+      // c) Telegram alarmi
+      if (isPrice) {
+        try {
+          const text =
+            `🚨 <b>YENI MUSTERI YAKALANDI!</b>\n\n` +
+            `👤 Kullanici: <b>${lead.userName}</b>\n` +
+            `💬 Yorum: <i>${message}</i>\n` +
+            `🎯 Islem: ${lead.replySent ? 'Yoruma yanit ✅' : 'Yanit ✖️'} | ${lead.dmSent ? 'Messenger DM ✅' : 'DM ✖️'}\n` +
+            `📊 Etiket: PRICE_INQUIRY`
+          await tgSendMessage(text, {
+            reply_markup: whatsapp
+              ? { inline_keyboard: [[{ text: '💚 WhatsApp ile Yaz', url: `https://wa.me/${whatsapp}` }]] }
+              : undefined,
+          })
+        } catch (e) {
+          await log('TELEGRAM_BOT', 'WARN', 'Telegram alarmi gonderilemedi', { error: e.message })
+        }
+      }
+
+      await log('COMMENT_TO_DM', 'INFO', `Yorum islendi (${sentiment})`, { user: lead.userName, price: isPrice })
+      results.push({ user: lead.userName, sentiment, replySent: lead.replySent, dmSent: lead.dmSent })
+    }
+  }
+  return results
+}
+
+// ================= TELEGRAM WEBHOOK =================
+async function processTelegramWebhook(database, body) {
+  // Inline buton tiklamalari
+  if (body.callback_query) {
+    const cq = body.callback_query
+    const data = cq.data || ''
+    if (data.startsWith('approve_post_')) {
+      const id = data.replace('approve_post_', '')
+      await database.collection('content_posts').updateOne(
+        { id },
+        { $set: { status: 'PUBLISHED', approvedAt: new Date(), publishedAt: new Date(), updatedAt: new Date() } }
+      )
+      await tgAnswerCallback(cq.id, 'Icerik onaylandi ve yayina alindi ✅')
+      await tgSendMessage(`✅ <b>Icerik onaylandi ve yayina alindi.</b>\nID: <code>${id}</code>`)
+      await log('TELEGRAM_BOT', 'INFO', 'Icerik onaylandi', { id })
+      return { action: 'approved', id }
+    }
+    if (data.startsWith('reject_post_')) {
+      const id = data.replace('reject_post_', '')
+      await database.collection('content_posts').updateOne(
+        { id },
+        { $set: { status: 'DRAFT', updatedAt: new Date() } }
+      )
+      await tgAnswerCallback(cq.id, 'Icerik reddedildi')
+      await log('TELEGRAM_BOT', 'INFO', 'Icerik reddedildi', { id })
+      return { action: 'rejected', id }
+    }
+    await tgAnswerCallback(cq.id, 'Bilinmeyen komut')
+    return { action: 'unknown_callback' }
+  }
+
+  const msg = body.message
+  if (!msg) return { action: 'ignored' }
+
+  // Gelen fotograf -> Vision analizi
+  if (msg.photo && msg.photo.length) {
+    try {
+      const largest = msg.photo[msg.photo.length - 1]
+      const base64 = await tgDownloadBase64(largest.file_id)
+      const analysis = await analyzeAuditScreenshot(base64)
+      const text =
+        `🔍 <b>Ekran Goruntusu Analizi</b>\n\n` +
+        `📊 Skor: <b>${analysis.score || 0}/100</b>\n` +
+        (analysis.issues?.length ? `\n<b>Sorunlar:</b>\n• ${analysis.issues.join('\n• ')}` : '') +
+        (analysis.recommendations?.length ? `\n\n<b>Oneriler:</b>\n• ${analysis.recommendations.join('\n• ')}` : '')
+      await tgSendMessage(text, { chatId: msg.chat.id })
+      await log('AI_VISION', 'INFO', 'Telegram foto analizi yapildi')
+      return { action: 'photo_analyzed', score: analysis.score }
+    } catch (e) {
+      await tgSendMessage('Foto analizi basarisiz: ' + e.message, { chatId: msg.chat.id })
+      await log('AI_VISION', 'ERROR', 'Telegram foto analizi hatasi', { error: e.message })
+      return { action: 'photo_error' }
+    }
+  }
+
+  // Metin -> icerik fabrikasina girdi
+  if (msg.text && !msg.text.startsWith('/')) {
+    try {
+      const page = await database.collection('facebook_pages').findOne({})
+      const content = await generateMultiPlatform(msg.text, page)
+      const post = {
+        id: uuidv4(),
+        pageId: page?.id || null,
+        rawInputText: msg.text,
+        status: 'DRAFT',
+        ...content,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      await database.collection('content_posts').insertOne(post)
+      await tgSendMessage(
+        `✍️ <b>Icerik uretildi!</b>\n\n<b>Facebook:</b>\n${content.fbCaption}\n\nOnaylamak icin panele gelin veya butona basin.`,
+        {
+          chatId: msg.chat.id,
+          reply_markup: { inline_keyboard: [[{ text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` }]] },
+        }
+      )
+      return { action: 'text_generated', id: post.id }
+    } catch (e) {
+      await tgSendMessage('Icerik uretilemedi: ' + e.message, { chatId: msg.chat.id })
+      return { action: 'text_error' }
+    }
+  }
+
+  if (msg.text === '/start') {
+    await tgSendMessage('👋 Command Cockpit botuna hos geldiniz! Ekran goruntusu gonderin (denetim) veya metin gonderin (icerik uretimi).', { chatId: msg.chat.id })
+    return { action: 'start' }
+  }
+
+  return { action: 'ignored' }
+}
+
+// ================= ROUTER =================
+async function handleRoute(request, { params }) {
+  const { path = [] } = await params
+  const route = `/${path.join('/')}`
+  const method = request.method
+  const url = new URL(request.url)
+
+  try {
+    const database = await connectToMongo()
+
+    // ---- health / info ----
+    if ((route === '/' || route === '/health') && method === 'GET') {
+      return json({ status: 'ok', app: 'Command Cockpit', integrations: integrationsStatus() })
+    }
+
+    // ---- config (for UI) ----
+    if (route === '/config' && method === 'GET') {
+      return json({ integrations: integrationsStatus(), permissions: REQUIRED_PERMISSIONS })
+    }
+
+    // ---- STATS ----
+    if (route === '/stats' && method === 'GET') {
+      const [pages, leads, priceLeads, published, pending, reports] = await Promise.all([
+        database.collection('facebook_pages').countDocuments(),
+        database.collection('leads').countDocuments(),
+        database.collection('leads').countDocuments({ sentiment: 'PRICE_INQUIRY' }),
+        database.collection('content_posts').countDocuments({ status: 'PUBLISHED' }),
+        database.collection('content_posts').countDocuments({ status: 'AWAITING_APPROVAL' }),
+        database.collection('audit_reports').find({}).sort({ createdAt: -1 }).limit(1).toArray(),
+      ])
+      const recentLeads = await database.collection('leads').find({}).sort({ createdAt: -1 }).limit(6).toArray()
+      const allPages = await database.collection('facebook_pages').find({}).toArray()
+      const avgHealth = allPages.length
+        ? Math.round(allPages.reduce((a, p) => a + (p.healthScore || 0), 0) / allPages.length)
+        : 0
+      return json({
+        totalPages: pages,
+        totalLeads: leads,
+        priceInquiries: priceLeads,
+        publishedPosts: published,
+        pendingApproval: pending,
+        avgHealth,
+        lastReport: reports[0] ? strip(reports[0]) : null,
+        recentLeads: recentLeads.map(strip),
+        integrations: integrationsStatus(),
+      })
+    }
+
+    // ---- LOGS ----
+    if (route === '/logs' && method === 'GET') {
+      const logs = await database.collection('system_logs').find({}).sort({ createdAt: -1 }).limit(50).toArray()
+      return json(logs.map(strip))
+    }
+
+    // ---- PAGES ----
+    if (route === '/pages' && method === 'GET') {
+      const pages = await database.collection('facebook_pages').find({}).sort({ createdAt: -1 }).toArray()
+      return json(pages.map(strip))
+    }
+    if (route === '/pages' && method === 'POST') {
+      const b = await request.json()
+      if (!b.pageId || !b.pageName) return json({ error: 'pageId ve pageName zorunlu' }, 400)
+      const doc = {
+        id: uuidv4(),
+        pageId: b.pageId,
+        pageName: b.pageName,
+        accessToken: b.accessToken || process.env.PAGE_ACCESS_TOKEN || '',
+        category: b.category || null,
+        whatsappNumber: b.whatsappNumber || null,
+        phone: b.phone || null,
+        website: b.website || null,
+        about: b.about || null,
+        coverPhotoUrl: null,
+        profilePhotoUrl: null,
+        healthScore: 0,
+        autoReplyActive: true,
+        commentTemplate: DEFAULT_COMMENT_TEMPLATE,
+        dmTemplate: DEFAULT_DM_TEMPLATE,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      const { id, createdAt, ...updateFields } = doc
+      await database.collection('facebook_pages').updateOne(
+        { pageId: b.pageId },
+        { $set: updateFields, $setOnInsert: { id, createdAt } },
+        { upsert: true }
+      )
+      const saved = await database.collection('facebook_pages').findOne({ pageId: b.pageId })
+      return json(strip(saved))
+    }
+    if (route.startsWith('/pages/') && method === 'GET') {
+      const id = path[1]
+      const p = await database.collection('facebook_pages').findOne({ id })
+      if (!p) return json({ error: 'Sayfa bulunamadi' }, 404)
+      return json(strip(p))
+    }
+    if (route.startsWith('/pages/') && method === 'PUT') {
+      const id = path[1]
+      const b = await request.json()
+      const allowed = ['pageName', 'accessToken', 'whatsappNumber', 'phone', 'website', 'about', 'commentTemplate', 'dmTemplate', 'autoReplyActive', 'category']
+      const set = { updatedAt: new Date() }
+      allowed.forEach((k) => { if (b[k] !== undefined) set[k] = b[k] })
+      await database.collection('facebook_pages').updateOne({ id }, { $set: set })
+      const p = await database.collection('facebook_pages').findOne({ id })
+      return json(strip(p))
+    }
+    if (route.startsWith('/pages/') && method === 'DELETE') {
+      const id = path[1]
+      await database.collection('facebook_pages').deleteOne({ id })
+      return json({ ok: true })
+    }
+
+    // ---- AUDIT ----
+    if (route === '/audit/crawl' && method === 'POST') {
+      const b = await request.json()
+      const page = await database.collection('facebook_pages').findOne({ id: b.pageId })
+      if (!page) return json({ error: 'Once bir Facebook sayfasi ekleyin' }, 400)
+      const token = page.accessToken || process.env.PAGE_ACCESS_TOKEN
+      if (!token) return json({ error: 'Bu sayfa icin PAGE_ACCESS_TOKEN tanimli degil' }, 400)
+
+      let data
+      try {
+        data = await crawlPage(page.pageId, token)
+      } catch (e) {
+        await log('META_WEBHOOK', 'ERROR', 'Graph API crawl hatasi', { error: e.message })
+        return json({ error: 'Graph API hatasi: ' + e.message }, 502)
+      }
+      const { score, missing } = computeHealth({ ...data, id: page.pageId })
+      let suggestions = { bio: '', aboutText: '', recommendedCta: 'Mesaj Gonder' }
+      try {
+        suggestions = await generateAuditSuggestions(data, missing)
+      } catch (e) {
+        await log('AI_VISION', 'WARN', 'AI oneri uretilemedi', { error: e.message })
+      }
+      const report = {
+        id: uuidv4(),
+        pageId: page.id,
+        status: 'COMPLETED',
+        score,
+        screenshotUrl: null,
+        missingFields: missing,
+        aiSuggestions: suggestions,
+        executedActions: [],
+        rawData: {
+          about: data.about || null,
+          phone: data.phone || null,
+          website: data.website || null,
+          category: data.category || null,
+          fan_count: data.fan_count || 0,
+        },
+        createdAt: new Date(),
+      }
+      await database.collection('audit_reports').insertOne(report)
+      await database.collection('facebook_pages').updateOne(
+        { id: page.id },
+        {
+          $set: {
+            healthScore: score,
+            about: data.about || page.about,
+            category: data.category || page.category,
+            website: data.website || page.website,
+            phone: data.phone || page.phone,
+            coverPhotoUrl: data.cover?.source || null,
+            profilePhotoUrl: data.picture?.data?.url || null,
+            updatedAt: new Date(),
+          },
+        }
+      )
+      await log('META_WEBHOOK', 'INFO', `Sayfa denetlendi: skor ${score}`, { page: page.pageName })
+      return json(strip(report))
+    }
+
+    if (route === '/audit/reports' && method === 'GET') {
+      const reports = await database.collection('audit_reports').find({}).sort({ createdAt: -1 }).limit(20).toArray()
+      return json(reports.map(strip))
+    }
+
+    if (route === '/audit/vision' && method === 'POST') {
+      const b = await request.json()
+      if (!b.image) return json({ error: 'image (base64/dataUrl) zorunlu' }, 400)
+      let analysis
+      try {
+        analysis = await analyzeAuditScreenshot(b.image)
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Vision analizi hatasi', { error: e.message })
+        return json({ error: 'Vision analizi hatasi: ' + e.message }, 502)
+      }
+      await log('AI_VISION', 'INFO', 'Ekran goruntusu analiz edildi', { score: analysis.score })
+      return json(analysis)
+    }
+
+    // Eksik alanlari Facebook'a bas
+    if (route === '/audit/fix' && method === 'POST') {
+      const b = await request.json()
+      const page = await database.collection('facebook_pages').findOne({ id: b.pageId })
+      if (!page) return json({ error: 'Sayfa bulunamadi' }, 400)
+      const token = page.accessToken || process.env.PAGE_ACCESS_TOKEN
+      if (!token) return json({ error: 'PAGE_ACCESS_TOKEN tanimli degil' }, 400)
+      if (!b.field || b.value === undefined) return json({ error: 'field ve value zorunlu' }, 400)
+      try {
+        const result = await updatePageField(page.pageId, { [b.field]: b.value }, token)
+        await database.collection('facebook_pages').updateOne(
+          { id: page.id },
+          { $set: { [b.field]: b.value, updatedAt: new Date() } }
+        )
+        await log('META_WEBHOOK', 'INFO', `Alan Facebook'a gonderildi: ${b.field}`, { page: page.pageName })
+        return json({ ok: true, result })
+      } catch (e) {
+        await log('META_WEBHOOK', 'ERROR', 'Alan gonderilemedi', { error: e.message, field: b.field })
+        return json({ error: 'Facebook guncelleme hatasi: ' + e.message }, 502)
+      }
+    }
+
+    // ---- CONTENT ----
+    if (route === '/content/generate' && method === 'POST') {
+      const b = await request.json()
+      if (!b.inputText || !b.inputText.trim()) return json({ error: 'inputText zorunlu' }, 400)
+      const page = b.pageId ? await database.collection('facebook_pages').findOne({ id: b.pageId }) : await database.collection('facebook_pages').findOne({})
+      let content
+      try {
+        content = await generateMultiPlatform(b.inputText, page)
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Icerik uretimi hatasi', { error: e.message })
+        return json({ error: 'AI icerik uretimi hatasi: ' + e.message }, 502)
+      }
+      const post = {
+        id: uuidv4(),
+        pageId: page?.id || null,
+        rawInputText: b.inputText,
+        rawMediaUrl: b.rawMediaUrl || null,
+        status: 'DRAFT',
+        fbCaption: content.fbCaption || '',
+        igCaption: content.igCaption || '',
+        ytTitle: content.ytTitle || '',
+        ytDescription: content.ytDescription || '',
+        tiktokCaption: content.tiktokCaption || '',
+        hashtags: Array.isArray(content.hashtags) ? content.hashtags : [],
+        telegramMessageId: null,
+        approvedAt: null,
+        publishedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      await database.collection('content_posts').insertOne(post)
+      return json(strip(post))
+    }
+
+    if (route === '/content' && method === 'GET') {
+      const posts = await database.collection('content_posts').find({}).sort({ createdAt: -1 }).limit(50).toArray()
+      return json(posts.map(strip))
+    }
+
+    if (route === '/content/telegram-approval' && method === 'POST') {
+      const b = await request.json()
+      const post = await database.collection('content_posts').findOne({ id: b.id })
+      if (!post) return json({ error: 'Icerik bulunamadi' }, 400)
+      try {
+        const text =
+          `📢 <b>YENI ICERIK ONAYI BEKLIYOR</b>\n\n` +
+          `<b>Facebook:</b>\n${post.fbCaption}\n\n` +
+          `<b>Instagram:</b>\n${post.igCaption}\n\n` +
+          `<b>YouTube:</b> ${post.ytTitle}\n` +
+          (post.hashtags?.length ? `\n${post.hashtags.join(' ')}` : '')
+        const sent = await tgSendMessage(text, {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` },
+              { text: '❌ Reddet', callback_data: `reject_post_${post.id}` },
+            ]],
+          },
+        })
+        await database.collection('content_posts').updateOne(
+          { id: b.id },
+          { $set: { status: 'AWAITING_APPROVAL', telegramMessageId: String(sent.message_id), updatedAt: new Date() } }
+        )
+        await log('TELEGRAM_BOT', 'INFO', 'Icerik onaya gonderildi', { id: b.id })
+        return json({ ok: true, messageId: sent.message_id })
+      } catch (e) {
+        await log('TELEGRAM_BOT', 'ERROR', 'Telegram onay gonderilemedi', { error: e.message })
+        return json({ error: 'Telegram gonderim hatasi: ' + e.message }, 502)
+      }
+    }
+
+    if (route === '/content/publish' && method === 'POST') {
+      const b = await request.json()
+      const post = await database.collection('content_posts').findOne({ id: b.id })
+      if (!post) return json({ error: 'Icerik bulunamadi' }, 400)
+      await database.collection('content_posts').updateOne(
+        { id: b.id },
+        { $set: { status: 'PUBLISHED', approvedAt: new Date(), publishedAt: new Date(), updatedAt: new Date() } }
+      )
+      await log('META_WEBHOOK', 'INFO', 'Icerik yayina alindi', { id: b.id })
+      const updated = await database.collection('content_posts').findOne({ id: b.id })
+      return json(strip(updated))
+    }
+
+    // ---- LEADS ----
+    if (route === '/leads' && method === 'GET') {
+      const leads = await database.collection('leads').find({}).sort({ createdAt: -1 }).limit(200).toArray()
+      return json(leads.map(strip))
+    }
+    if (route === '/leads' && method === 'POST') {
+      // Manuel / test lead olusturma (gercek DB kaydi)
+      const b = await request.json()
+      const lead = {
+        id: uuidv4(),
+        pageId: b.pageId || null,
+        platform: b.platform || 'FACEBOOK_COMMENT',
+        externalUserId: b.externalUserId || uuidv4(),
+        userName: b.userName || 'Manuel Kayit',
+        commentId: b.commentId || null,
+        postId: b.postId || null,
+        userMessage: b.userMessage || '',
+        replySent: !!b.replySent,
+        dmSent: !!b.dmSent,
+        status: b.status || 'NEW',
+        sentiment: b.sentiment || 'GENERAL',
+        whatsappNumber: b.whatsappNumber || null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      await database.collection('leads').insertOne(lead)
+      return json(strip(lead))
+    }
+    if (route.startsWith('/leads/') && method === 'PUT') {
+      const id = path[1]
+      const b = await request.json()
+      const set = { updatedAt: new Date() }
+      if (b.status) set.status = b.status
+      await database.collection('leads').updateOne({ id }, { $set: set })
+      const l = await database.collection('leads').findOne({ id })
+      return json(strip(l))
+    }
+
+    // ---- WEBHOOKS: META ----
+    if (route === '/webhooks/meta' && method === 'GET') {
+      const mode = url.searchParams.get('hub.mode')
+      const verifyToken = url.searchParams.get('hub.verify_token')
+      const challenge = url.searchParams.get('hub.challenge')
+      if (mode === 'subscribe' && verifyToken === (process.env.META_VERIFY_TOKEN || '')) {
+        await log('META_WEBHOOK', 'INFO', 'Webhook dogrulama basarili')
+        return new NextResponse(challenge, { status: 200 })
+      }
+      return new NextResponse('Forbidden', { status: 403 })
+    }
+    if (route === '/webhooks/meta' && method === 'POST') {
+      const body = await request.json()
+      await log('META_WEBHOOK', 'INFO', 'Webhook olayi alindi', { object: body.object })
+      const results = await processMetaWebhook(database, body)
+      return json({ ok: true, processed: results })
+    }
+
+    // ---- WEBHOOKS: TELEGRAM ----
+    if (route === '/webhooks/telegram' && method === 'POST') {
+      const body = await request.json()
+      const result = await processTelegramWebhook(database, body)
+      return json({ ok: true, result })
+    }
+
+    // ---- Test simulator: fake a Meta comment to run the engine end-to-end ----
+    if (route === '/simulate/comment' && method === 'POST') {
+      const b = await request.json()
+      const page = await database.collection('facebook_pages').findOne({ id: b.pageId }) ||
+        await database.collection('facebook_pages').findOne({})
+      const fbPageId = page?.pageId || process.env.PAGE_ID || 'SIM_PAGE'
+      const fakeBody = {
+        object: 'page',
+        entry: [{
+          id: fbPageId,
+          changes: [{
+            field: 'feed',
+            value: {
+              item: 'comment',
+              verb: 'add',
+              comment_id: 'sim_' + uuidv4(),
+              post_id: fbPageId + '_' + uuidv4().slice(0, 8),
+              from: { id: 'sim_user_' + uuidv4().slice(0, 6), name: b.userName || 'Test Musteri' },
+              message: b.message || 'Bu urunun fiyati ne kadar?',
+            },
+          }],
+        }],
+      }
+      const results = await processMetaWebhook(database, fakeBody)
+      return json({ ok: true, simulated: true, processed: results })
+    }
+
+    return json({ error: `Route ${route} bulunamadi` }, 404)
+  } catch (error) {
+    console.error('API Error:', error)
+    return json({ error: 'Sunucu hatasi', message: error.message }, 500)
+  }
+}
+
+export const GET = handleRoute
+export const POST = handleRoute
+export const PUT = handleRoute
+export const DELETE = handleRoute
+export const PATCH = handleRoute
