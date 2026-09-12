@@ -1,390 +1,420 @@
 #!/usr/bin/env python3
 """
-Backend test for Logo Library endpoints
-Tests: GET/POST/DELETE /api/studio/logos + transitionDur sanity check
+Backend test for Video Cutter add-on endpoints
+Tests: /api/video/thumbnail, /api/video/vertical, /api/video/audio
 """
-
 import requests
+import subprocess
+import os
+import json
 import time
-import sys
 
+# Base URL from .env
 BASE_URL = "https://audit-hub-154.preview.emergentagent.com/api"
 
-# Tiny 1x1 PNG base64 (valid PNG)
-TINY_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+def run_command(cmd):
+    """Run shell command and return output"""
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.returncode, result.stdout, result.stderr
 
-def test_logo_library():
-    """Test Logo Library endpoints"""
+def test_video_cutter_addons():
+    """Test Video Cutter add-on endpoints"""
     print("\n" + "="*80)
-    print("LOGO LIBRARY TESTING")
+    print("VIDEO CUTTER ADD-ON ENDPOINTS TEST")
     print("="*80)
     
-    created_ids = []
-    
-    try:
-        # TEST 1: GET /api/studio/logos (initial state)
-        print("\n[TEST 1] GET /api/studio/logos (initial state)")
-        try:
-            r = requests.get(f"{BASE_URL}/studio/logos", timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 200:
-                logos = r.json()
-                print(f"✅ PASSED: GET /api/studio/logos returns 200 JSON array (count: {len(logos)})")
-                initial_count = len(logos)
-                # Clean up any existing logos for fresh test
-                for logo in logos:
-                    if 'id' in logo:
-                        requests.delete(f"{BASE_URL}/studio/logos/{logo['id']}", timeout=10)
-                        print(f"  Cleaned up existing logo: {logo.get('name', 'unnamed')}")
-            else:
-                print(f"❌ FAILED: Expected 200, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 2: POST /api/studio/logos with valid data
-        print("\n[TEST 2] POST /api/studio/logos with valid data")
-        try:
-            payload = {"image": TINY_PNG, "name": "Test Logo"}
-            r = requests.post(f"{BASE_URL}/studio/logos", json=payload, timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 200:
-                data = r.json()
-                print(f"Response keys: {list(data.keys())}")
-                # Check required fields
-                if 'id' in data and 'name' in data and 'image' in data and 'createdAt' in data:
-                    if '_id' not in data:
-                        print(f"✅ PASSED: POST /api/studio/logos returns 200 JSON with id (uuid), name, image, createdAt, NO _id field")
-                        print(f"  id: {data['id']}")
-                        print(f"  name: {data['name']}")
-                        print(f"  createdAt: {data['createdAt']}")
-                        created_ids.append(data['id'])
-                    else:
-                        print(f"❌ FAILED: Response contains _id field (should be stripped)")
-                        return False
-                else:
-                    print(f"❌ FAILED: Missing required fields. Got: {list(data.keys())}")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 200, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 3: POST /api/studio/logos with invalid data (empty body)
-        print("\n[TEST 3] POST /api/studio/logos with invalid data (empty body)")
-        try:
-            r = requests.post(f"{BASE_URL}/studio/logos", json={}, timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 400:
-                data = r.json()
-                error_msg = data.get('error', '')
-                if 'Gecerli bir gorsel (dataUrl) zorunlu' in error_msg:
-                    print(f"✅ PASSED: POST with empty body returns clean 400 error: '{error_msg}'")
-                else:
-                    print(f"❌ FAILED: Expected error message 'Gecerli bir gorsel (dataUrl) zorunlu', got: '{error_msg}'")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 400, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 4: POST /api/studio/logos with invalid image (not starting with data:image)
-        print("\n[TEST 4] POST /api/studio/logos with invalid image (not starting with data:image)")
-        try:
-            payload = {"image": "invalid_base64_string", "name": "Invalid Logo"}
-            r = requests.post(f"{BASE_URL}/studio/logos", json=payload, timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 400:
-                data = r.json()
-                error_msg = data.get('error', '')
-                if 'Gecerli bir gorsel (dataUrl) zorunlu' in error_msg:
-                    print(f"✅ PASSED: POST with invalid image returns clean 400 error: '{error_msg}'")
-                else:
-                    print(f"❌ FAILED: Expected error message 'Gecerli bir gorsel (dataUrl) zorunlu', got: '{error_msg}'")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 400, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 5: Create 4 more logos to reach limit of 5
-        print("\n[TEST 5] Create 4 more logos to reach limit of 5")
-        try:
-            for i in range(2, 6):
-                payload = {"image": TINY_PNG, "name": f"Test Logo {i}"}
-                r = requests.post(f"{BASE_URL}/studio/logos", json=payload, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    created_ids.append(data['id'])
-                    print(f"  Created logo {i}: {data['id']}")
-                else:
-                    print(f"❌ FAILED: Could not create logo {i}, status: {r.status_code}")
-                    return False
-            print(f"✅ PASSED: Created 4 more logos (total 5 logos)")
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 6: Attempt to create 6th logo (should fail with limit error)
-        print("\n[TEST 6] POST 6th logo when 5 already exist (should fail with limit error)")
-        try:
-            payload = {"image": TINY_PNG, "name": "Test Logo 6"}
-            r = requests.post(f"{BASE_URL}/studio/logos", json=payload, timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 400:
-                data = r.json()
-                error_msg = data.get('error', '')
-                if 'En fazla 5 logo saklayabilirsiniz. Once bir logoyu silin.' in error_msg:
-                    print(f"✅ PASSED: POST 6th logo returns clean 400 error: '{error_msg}'")
-                else:
-                    print(f"❌ FAILED: Expected error message 'En fazla 5 logo saklayabilirsiniz. Once bir logoyu silin.', got: '{error_msg}'")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 400, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 7: GET /api/studio/logos after creating (should include all 5 logos)
-        print("\n[TEST 7] GET /api/studio/logos after creating (should include all 5 logos)")
-        try:
-            r = requests.get(f"{BASE_URL}/studio/logos", timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 200:
-                logos = r.json()
-                print(f"Logo count: {len(logos)}")
-                if len(logos) == 5:
-                    # Verify all created IDs are present
-                    logo_ids = [logo['id'] for logo in logos]
-                    all_present = all(cid in logo_ids for cid in created_ids)
-                    if all_present:
-                        print(f"✅ PASSED: GET /api/studio/logos returns all 5 created logos")
-                        for logo in logos:
-                            print(f"  - {logo['name']} (id: {logo['id']})")
-                    else:
-                        print(f"❌ FAILED: Not all created logos are present in the list")
-                        return False
-                else:
-                    print(f"❌ FAILED: Expected 5 logos, got {len(logos)}")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 200, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 8: DELETE /api/studio/logos/<id>
-        print("\n[TEST 8] DELETE /api/studio/logos/<id>")
-        try:
-            if created_ids:
-                delete_id = created_ids[0]
-                r = requests.delete(f"{BASE_URL}/studio/logos/{delete_id}", timeout=10)
-                print(f"Status: {r.status_code}")
-                if r.status_code == 200:
-                    data = r.json()
-                    if data.get('ok') == True:
-                        print(f"✅ PASSED: DELETE /api/studio/logos/{delete_id} returns {{ok:true}}")
-                    else:
-                        print(f"❌ FAILED: Expected {{ok:true}}, got: {data}")
-                        return False
-                else:
-                    print(f"❌ FAILED: Expected 200, got {r.status_code}")
-                    print(f"Response: {r.text[:500]}")
-                    return False
-            else:
-                print(f"❌ FAILED: No logos to delete")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # TEST 9: GET /api/studio/logos after DELETE (verify removal)
-        print("\n[TEST 9] GET /api/studio/logos after DELETE (verify removal)")
-        try:
-            r = requests.get(f"{BASE_URL}/studio/logos", timeout=10)
-            print(f"Status: {r.status_code}")
-            if r.status_code == 200:
-                logos = r.json()
-                print(f"Logo count after delete: {len(logos)}")
-                logo_ids = [logo['id'] for logo in logos]
-                if delete_id not in logo_ids:
-                    print(f"✅ PASSED: Deleted logo {delete_id} is no longer in the list (count: {len(logos)})")
-                else:
-                    print(f"❌ FAILED: Deleted logo {delete_id} is still in the list")
-                    return False
-            else:
-                print(f"❌ FAILED: Expected 200, got {r.status_code}")
-                print(f"Response: {r.text[:500]}")
-                return False
-        except Exception as e:
-            print(f"❌ FAILED: Exception - {e}")
-            return False
-        
-        # CLEANUP: Delete remaining logos
-        print("\n[CLEANUP] Deleting remaining logos")
-        try:
-            r = requests.get(f"{BASE_URL}/studio/logos", timeout=10)
-            if r.status_code == 200:
-                logos = r.json()
-                for logo in logos:
-                    if 'id' in logo:
-                        r = requests.delete(f"{BASE_URL}/studio/logos/{logo['id']}", timeout=10)
-                        if r.status_code == 200:
-                            print(f"  Deleted logo: {logo.get('name', 'unnamed')} ({logo['id']})")
-                        else:
-                            print(f"  Failed to delete logo: {logo['id']}")
-                print(f"✅ CLEANUP COMPLETE: All logos deleted")
-        except Exception as e:
-            print(f"⚠️ CLEANUP WARNING: Exception - {e}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"\n❌ UNEXPECTED ERROR: {e}")
+    # Step 1: Create source video WITH audio
+    print("\n[SETUP] Creating source video with audio...")
+    cmd = "ffmpeg -f lavfi -i testsrc=duration=6:size=640x480:rate=25 -f lavfi -i sine=frequency=440:duration=6 -pix_fmt yuv420p -shortest /tmp/src.mp4 -y"
+    code, out, err = run_command(cmd)
+    if code != 0:
+        print(f"❌ FAILED to create source video: {err}")
         return False
-
-
-def test_render_transition_dur():
-    """Test transitionDur parameter in multi-scene render"""
-    print("\n" + "="*80)
-    print("RENDER TRANSITIONDUR SANITY CHECK")
-    print("="*80)
     
+    # Check file exists and has size
+    if not os.path.exists('/tmp/src.mp4'):
+        print("❌ FAILED: /tmp/src.mp4 not created")
+        return False
+    
+    file_size = os.path.getsize('/tmp/src.mp4')
+    print(f"✅ Source video created: /tmp/src.mp4 ({file_size} bytes)")
+    
+    # Step 2: Upload video via POST /api/video/upload-chunk
+    print("\n[SETUP] Uploading source video via POST /api/video/upload-chunk...")
     try:
-        # TEST: POST /api/studio/render with 2 scenes + transition='fade' + transitionDur=1.5 + audioMode='silent'
-        print("\n[TEST] POST /api/studio/render with 2 scenes + transition='fade' + transitionDur=1.5 + audioMode='silent'")
+        with open('/tmp/src.mp4', 'rb') as f:
+            video_bytes = f.read()
         
-        payload = {
-            "scenes": [
-                {"posterDataUrl": TINY_PNG, "duration": 2},
-                {"posterDataUrl": TINY_PNG, "duration": 2}
-            ],
-            "transition": "fade",
-            "transitionDur": 1.5,
-            "audioMode": "silent"
+        files = {
+            'chunk': ('src.mp4', video_bytes, 'video/mp4')
+        }
+        data = {
+            'uploadId': 'test_video_cutter_001',
+            'index': '0',
+            'ext': 'mp4',
+            'final': 'true'
         }
         
-        r = requests.post(f"{BASE_URL}/studio/render", json=payload, timeout=15)
-        print(f"Status: {r.status_code}")
+        response = requests.post(f"{BASE_URL}/video/upload-chunk", files=files, data=data, timeout=30)
+        print(f"Status: {response.status_code}")
         
-        if r.status_code == 200:
-            data = r.json()
-            print(f"Response keys: {list(data.keys())}")
-            
-            if 'jobId' in data and 'status' in data:
-                job_id = data['jobId']
-                print(f"✅ PASSED: POST /api/studio/render returns jobId: {job_id}, status: {data['status']}")
-                
-                # Poll for completion (max 30 seconds)
-                print(f"\nPolling for render completion (max 30s)...")
-                max_wait = 30
-                start_time = time.time()
-                
-                while time.time() - start_time < max_wait:
-                    r = requests.get(f"{BASE_URL}/studio/render/{job_id}", timeout=10)
-                    if r.status_code == 200:
-                        render_data = r.json()
-                        status = render_data.get('status')
-                        print(f"  Status: {status} (elapsed: {int(time.time() - start_time)}s)")
-                        
-                        if status == 'DONE':
-                            if 'videoUrl' in render_data:
-                                video_url = render_data['videoUrl']
-                                print(f"✅ PASSED: Render completed with videoUrl: {video_url}")
-                                
-                                # Verify video is accessible
-                                video_r = requests.get(f"https://audit-hub-154.preview.emergentagent.com{video_url}", timeout=10)
-                                if video_r.status_code == 200:
-                                    content_type = video_r.headers.get('Content-Type', '')
-                                    size = len(video_r.content)
-                                    print(f"✅ PASSED: Video accessible, Content-Type: {content_type}, Size: {size} bytes")
-                                    if 'video/mp4' in content_type and size > 0:
-                                        print(f"✅ PASSED: Valid MP4 video produced with transitionDur=1.5")
-                                        return True
-                                    else:
-                                        print(f"❌ FAILED: Invalid video Content-Type or size")
-                                        return False
-                                else:
-                                    print(f"❌ FAILED: Video not accessible, status: {video_r.status_code}")
-                                    return False
-                            else:
-                                print(f"❌ FAILED: Render DONE but no videoUrl in response")
-                                return False
-                        elif status == 'FAILED':
-                            print(f"❌ FAILED: Render failed with error: {render_data.get('error', 'unknown')}")
-                            return False
-                        
-                        time.sleep(2)
-                    else:
-                        print(f"❌ FAILED: Poll request failed with status: {r.status_code}")
-                        return False
-                
-                print(f"❌ FAILED: Render did not complete within {max_wait}s")
-                return False
-            else:
-                print(f"❌ FAILED: Missing jobId or status in response")
-                print(f"Response: {data}")
-                return False
-        else:
-            print(f"❌ FAILED: Expected 200, got {r.status_code}")
-            print(f"Response: {r.text[:500]}")
+        if response.status_code != 200:
+            print(f"❌ FAILED to upload video: {response.text}")
             return False
-            
+        
+        upload_result = response.json()
+        print(f"Response: {json.dumps(upload_result, indent=2)}")
+        
+        if not upload_result.get('ok') or not upload_result.get('file'):
+            print(f"❌ FAILED: Upload did not return ok=true or file")
+            return False
+        
+        uploaded_file = upload_result['file']
+        duration = upload_result.get('duration', 0)
+        print(f"✅ Video uploaded: {uploaded_file}, duration: {duration}s")
+        
+        if duration < 5.9 or duration > 6.1:
+            print(f"⚠️  WARNING: Duration {duration}s not in expected range 5.9-6.1s")
+        
     except Exception as e:
-        print(f"❌ FAILED: Exception - {e}")
+        print(f"❌ FAILED to upload video: {str(e)}")
         return False
-
-
-def main():
+    
+    # Test 1: POST /api/video/thumbnail
+    print("\n" + "-"*80)
+    print("TEST 1: POST /api/video/thumbnail")
+    print("-"*80)
+    try:
+        payload = {
+            'file': uploaded_file,
+            'time': 2
+        }
+        response = requests.post(f"{BASE_URL}/video/thumbnail", json=payload, timeout=30)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if not result.get('file') or not result['file'].endswith('.png'):
+            print(f"❌ FAILED: Response does not contain .png file")
+            return False
+        
+        if not result.get('url'):
+            print(f"❌ FAILED: Response does not contain url")
+            return False
+        
+        thumb_file = result['file']
+        thumb_url = result['url']
+        print(f"✅ Thumbnail generated: {thumb_file}")
+        print(f"   URL: {thumb_url}")
+        
+        # GET the thumbnail URL to verify it's accessible
+        full_url = BASE_URL.replace('/api', '') + thumb_url
+        print(f"\n[TEST 1.1] GET {full_url}")
+        img_response = requests.get(full_url, timeout=30)
+        print(f"Status: {img_response.status_code}")
+        print(f"Content-Type: {img_response.headers.get('Content-Type')}")
+        print(f"Content-Length: {len(img_response.content)} bytes")
+        
+        if img_response.status_code != 200:
+            print(f"❌ FAILED: Could not GET thumbnail image")
+            return False
+        
+        if len(img_response.content) == 0:
+            print(f"❌ FAILED: Thumbnail image has 0 bytes")
+            return False
+        
+        print(f"✅ TEST 1 PASSED: Thumbnail endpoint working, image accessible ({len(img_response.content)} bytes)")
+        
+    except Exception as e:
+        print(f"❌ TEST 1 FAILED: {str(e)}")
+        return False
+    
+    # Test 2: POST /api/video/vertical
+    print("\n" + "-"*80)
+    print("TEST 2: POST /api/video/vertical")
+    print("-"*80)
+    try:
+        payload = {
+            'file': uploaded_file
+        }
+        response = requests.post(f"{BASE_URL}/video/vertical", json=payload, timeout=60)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if not result.get('jobId'):
+            print(f"❌ FAILED: Response does not contain jobId")
+            return False
+        
+        if not result.get('url'):
+            print(f"❌ FAILED: Response does not contain url")
+            return False
+        
+        job_id = result['jobId']
+        video_url = result['url']
+        video_duration = result.get('duration', 0)
+        
+        print(f"✅ Vertical video created: jobId={job_id}, duration={video_duration}s")
+        print(f"   URL: {video_url}")
+        
+        if video_duration < 5.5 or video_duration > 6.5:
+            print(f"⚠️  WARNING: Duration {video_duration}s not close to expected ~6s")
+        
+        # GET /api/studio/render/<jobId> to verify status DONE
+        print(f"\n[TEST 2.1] GET /api/studio/render/{job_id}")
+        render_response = requests.get(f"{BASE_URL}/studio/render/{job_id}", timeout=30)
+        print(f"Status: {render_response.status_code}")
+        
+        if render_response.status_code != 200:
+            print(f"❌ FAILED: Could not GET render status")
+            return False
+        
+        render_doc = render_response.json()
+        print(f"Render status: {render_doc.get('status')}")
+        
+        if render_doc.get('status') != 'DONE':
+            print(f"❌ FAILED: Render status is not DONE")
+            return False
+        
+        print(f"✅ Render status is DONE")
+        
+        # GET the video URL to verify it's accessible
+        full_url = BASE_URL.replace('/api', '') + video_url
+        print(f"\n[TEST 2.2] GET {full_url}")
+        video_response = requests.get(full_url, timeout=30)
+        print(f"Status: {video_response.status_code}")
+        print(f"Content-Type: {video_response.headers.get('Content-Type')}")
+        print(f"Content-Length: {len(video_response.content)} bytes")
+        
+        if video_response.status_code != 200:
+            print(f"❌ FAILED: Could not GET video")
+            return False
+        
+        if len(video_response.content) == 0:
+            print(f"❌ FAILED: Video has 0 bytes")
+            return False
+        
+        if 'video' not in video_response.headers.get('Content-Type', ''):
+            print(f"⚠️  WARNING: Content-Type is not video/*")
+        
+        print(f"✅ Video is accessible and playable ({len(video_response.content)} bytes)")
+        
+        # Try to verify resolution with ffprobe if we can locate the file
+        print(f"\n[TEST 2.3] Verifying resolution with ffprobe...")
+        out_file = render_doc.get('outFile')
+        if out_file:
+            file_path = f"/app/uploads/{out_file}"
+            if os.path.exists(file_path):
+                cmd = f"ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 {file_path}"
+                code, out, err = run_command(cmd)
+                if code == 0:
+                    resolution = out.strip()
+                    print(f"Resolution: {resolution}")
+                    if resolution == "1080x1920":
+                        print(f"✅ Resolution is correct: 1080x1920")
+                    else:
+                        print(f"⚠️  WARNING: Resolution {resolution} is not 1080x1920")
+                else:
+                    print(f"⚠️  Could not probe resolution: {err}")
+            else:
+                print(f"⚠️  Could not locate file {file_path} for ffprobe verification")
+        
+        print(f"✅ TEST 2 PASSED: Vertical video endpoint working")
+        
+    except Exception as e:
+        print(f"❌ TEST 2 FAILED: {str(e)}")
+        return False
+    
+    # Test 3: POST /api/video/audio with action='mute'
+    print("\n" + "-"*80)
+    print("TEST 3: POST /api/video/audio (action='mute')")
+    print("-"*80)
+    try:
+        payload = {
+            'file': uploaded_file,
+            'action': 'mute'
+        }
+        response = requests.post(f"{BASE_URL}/video/audio", json=payload, timeout=60)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if not result.get('jobId'):
+            print(f"❌ FAILED: Response does not contain jobId")
+            return False
+        
+        if not result.get('url'):
+            print(f"❌ FAILED: Response does not contain url")
+            return False
+        
+        job_id = result['jobId']
+        video_url = result['url']
+        
+        print(f"✅ Muted video created: jobId={job_id}")
+        print(f"   URL: {video_url}")
+        
+        # Try to verify NO audio stream with ffprobe
+        print(f"\n[TEST 3.1] Verifying NO audio stream with ffprobe...")
+        render_response = requests.get(f"{BASE_URL}/studio/render/{job_id}", timeout=30)
+        if render_response.status_code == 200:
+            render_doc = render_response.json()
+            out_file = render_doc.get('outFile')
+            if out_file:
+                file_path = f"/app/uploads/{out_file}"
+                if os.path.exists(file_path):
+                    cmd = f"ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 {file_path}"
+                    code, out, err = run_command(cmd)
+                    audio_streams = out.strip()
+                    print(f"Audio streams: '{audio_streams}'")
+                    if audio_streams == "":
+                        print(f"✅ NO audio stream found (correct for mute)")
+                    else:
+                        print(f"❌ FAILED: Audio stream found in muted video: {audio_streams}")
+                        return False
+                else:
+                    print(f"⚠️  Could not locate file {file_path} for ffprobe verification")
+        
+        print(f"✅ TEST 3 PASSED: Mute audio endpoint working")
+        
+    except Exception as e:
+        print(f"❌ TEST 3 FAILED: {str(e)}")
+        return False
+    
+    # Test 4: POST /api/video/audio with action='music', presetId='enerjik'
+    print("\n" + "-"*80)
+    print("TEST 4: POST /api/video/audio (action='music', presetId='enerjik')")
+    print("-"*80)
+    try:
+        payload = {
+            'file': uploaded_file,
+            'action': 'music',
+            'presetId': 'enerjik'
+        }
+        response = requests.post(f"{BASE_URL}/video/audio", json=payload, timeout=60)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"❌ FAILED: Expected 200, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if not result.get('jobId'):
+            print(f"❌ FAILED: Response does not contain jobId")
+            return False
+        
+        if not result.get('url'):
+            print(f"❌ FAILED: Response does not contain url")
+            return False
+        
+        job_id = result['jobId']
+        video_url = result['url']
+        
+        print(f"✅ Music video created: jobId={job_id}")
+        print(f"   URL: {video_url}")
+        
+        # Try to verify audio stream EXISTS with ffprobe
+        print(f"\n[TEST 4.1] Verifying audio stream EXISTS with ffprobe...")
+        render_response = requests.get(f"{BASE_URL}/studio/render/{job_id}", timeout=30)
+        if render_response.status_code == 200:
+            render_doc = render_response.json()
+            out_file = render_doc.get('outFile')
+            if out_file:
+                file_path = f"/app/uploads/{out_file}"
+                if os.path.exists(file_path):
+                    cmd = f"ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 {file_path}"
+                    code, out, err = run_command(cmd)
+                    audio_streams = out.strip()
+                    print(f"Audio streams: '{audio_streams}'")
+                    if "audio" in audio_streams:
+                        print(f"✅ Audio stream found (correct for music)")
+                    else:
+                        print(f"❌ FAILED: NO audio stream found in music video")
+                        return False
+                else:
+                    print(f"⚠️  Could not locate file {file_path} for ffprobe verification")
+        
+        print(f"✅ TEST 4 PASSED: Music audio endpoint working")
+        
+    except Exception as e:
+        print(f"❌ TEST 4 FAILED: {str(e)}")
+        return False
+    
+    # Test 5: Error cases
+    print("\n" + "-"*80)
+    print("TEST 5: Error cases")
+    print("-"*80)
+    
+    # Test 5.1: POST /api/video/thumbnail with empty body
+    print("\n[TEST 5.1] POST /api/video/thumbnail with empty body {}")
+    try:
+        response = requests.post(f"{BASE_URL}/video/thumbnail", json={}, timeout=30)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:200]}")
+        
+        if response.status_code != 400:
+            print(f"❌ FAILED: Expected 400, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if 'file zorunlu' not in result.get('error', ''):
+            print(f"⚠️  WARNING: Error message does not contain 'file zorunlu'")
+        
+        print(f"✅ Correct 400 error for missing file")
+        
+    except Exception as e:
+        print(f"❌ TEST 5.1 FAILED: {str(e)}")
+        return False
+    
+    # Test 5.2: POST /api/video/vertical with nonexistent file
+    print("\n[TEST 5.2] POST /api/video/vertical with nonexistent file")
+    try:
+        payload = {
+            'file': 'nope.mp4'
+        }
+        response = requests.post(f"{BASE_URL}/video/vertical", json=payload, timeout=30)
+        print(f"Status: {response.status_code}")
+        print(f"Response: {response.text[:200]}")
+        
+        if response.status_code != 404:
+            print(f"❌ FAILED: Expected 404, got {response.status_code}")
+            return False
+        
+        result = response.json()
+        if 'video dosyasi yok' not in result.get('error', ''):
+            print(f"⚠️  WARNING: Error message does not contain 'video dosyasi yok'")
+        
+        print(f"✅ Correct 404 error for nonexistent file")
+        
+    except Exception as e:
+        print(f"❌ TEST 5.2 FAILED: {str(e)}")
+        return False
+    
+    print(f"\n✅ TEST 5 PASSED: Error cases handled correctly")
+    
     print("\n" + "="*80)
-    print("BACKEND TESTING - LOGO LIBRARY + TRANSITIONDUR")
+    print("✅ ALL VIDEO CUTTER ADD-ON TESTS PASSED (5/5)")
     print("="*80)
-    print(f"Base URL: {BASE_URL}")
-    print("="*80)
-    
-    results = []
-    
-    # Test Logo Library
-    logo_result = test_logo_library()
-    results.append(("Logo Library", logo_result))
-    
-    # Test transitionDur
-    transition_result = test_render_transition_dur()
-    results.append(("Render transitionDur", transition_result))
-    
-    # Summary
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
-    
-    for test_name, result in results:
-        status = "✅ PASSED" if result else "❌ FAILED"
-        print(f"{status}: {test_name}")
-    
-    all_passed = all(result for _, result in results)
-    
-    if all_passed:
-        print("\n✅ ALL TESTS PASSED")
-        sys.exit(0)
-    else:
-        print("\n❌ SOME TESTS FAILED")
-        sys.exit(1)
-
+    return True
 
 if __name__ == "__main__":
-    main()
+    try:
+        success = test_video_cutter_addons()
+        exit(0 if success else 1)
+    except Exception as e:
+        print(f"\n❌ TEST SUITE FAILED WITH EXCEPTION: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        exit(1)

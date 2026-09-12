@@ -1,13 +1,13 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Upload, Scissors, SplitSquareHorizontal, Loader2, Download, Youtube, Facebook, Instagram,
-  CalendarClock, Trash2, Plus, Film, Flag,
+  CalendarClock, Trash2, Plus, Film, Flag, Image as ImageIcon, Smartphone, VolumeX, Music,
 } from 'lucide-react'
 
 const api = async (path, opts) => {
@@ -42,6 +42,11 @@ export default function VideoCutter({ pageId }) {
   const [points, setPoints] = useState([])
 
   const [results, setResults] = useState([]) // [{jobId,url,duration,start,end}]
+  const [presets, setPresets] = useState([])
+
+  useEffect(() => { api('/studio/presets').then(setPresets).catch(() => {}) }, [])
+
+  const addResult = (r) => setResults((prev) => [...prev, r])
 
   const onUpload = async (e) => {
     const f = e.target.files?.[0]; if (!f) return
@@ -215,7 +220,7 @@ export default function VideoCutter({ pageId }) {
             {!results.length ? (
               <p className="text-sm text-zinc-500">Kesme/bolme sonrasi parcalar burada gorunur; indirebilir veya paylasabilirsiniz.</p>
             ) : results.map((r, i) => (
-              <ResultCard key={r.jobId} index={i} r={r} pageId={pageId} />
+              <ResultCard key={r.jobId} index={i} r={r} pageId={pageId} presets={presets} onNewResult={addResult} />
             ))}
           </CardContent>
         </Card>
@@ -224,12 +229,55 @@ export default function VideoCutter({ pageId }) {
   )
 }
 
-function ResultCard({ r, index, pageId }) {
+function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
+  const vidRef = useRef(null)
   const [publishing, setPublishing] = useState('')
   const [schedAt, setSchedAt] = useState('')
   const [schedPlatforms, setSchedPlatforms] = useState({ youtube: false, facebook: true, instagram: false })
   const [schedCaption, setSchedCaption] = useState('')
   const [showSched, setShowSched] = useState(false)
+  const [working, setWorking] = useState('')
+  const [thumb, setThumb] = useState(null)
+  const [showMusic, setShowMusic] = useState(false)
+  const [presetId, setPresetId] = useState('enerjik')
+
+  const grabThumb = async () => {
+    setWorking('thumb')
+    try {
+      const t = Number((vidRef.current?.currentTime || 0).toFixed(2))
+      const res = await api('/video/thumbnail', { method: 'POST', body: JSON.stringify({ file: r.file, time: t }) })
+      setThumb(res.url)
+      toast.success('Kapak alindi (' + fmt(t) + ')')
+    } catch (e) { toast.error(e.message) } finally { setWorking('') }
+  }
+
+  const makeVertical = async () => {
+    setWorking('vertical')
+    try {
+      const res = await api('/video/vertical', { method: 'POST', body: JSON.stringify({ file: r.file }) })
+      onNewResult?.({ ...res, label: '9:16 Dikey' })
+      toast.success('9:16 dikey video hazir! Sonuclara eklendi.')
+    } catch (e) { toast.error(e.message) } finally { setWorking('') }
+  }
+
+  const muteVideo = async () => {
+    setWorking('mute')
+    try {
+      const res = await api('/video/audio', { method: 'POST', body: JSON.stringify({ file: r.file, action: 'mute' }) })
+      onNewResult?.({ ...res, label: 'Sessiz' })
+      toast.success('Sesi kaldirilmis video hazir!')
+    } catch (e) { toast.error(e.message) } finally { setWorking('') }
+  }
+
+  const addMusic = async () => {
+    setWorking('music')
+    try {
+      const res = await api('/video/audio', { method: 'POST', body: JSON.stringify({ file: r.file, action: 'music', presetId }) })
+      onNewResult?.({ ...res, label: 'Muzikli' })
+      setShowMusic(false)
+      toast.success('Muzik bindirilmis video hazir!')
+    } catch (e) { toast.error(e.message) } finally { setWorking('') }
+  }
 
   const publish = async (platform) => {
     setPublishing(platform)
@@ -257,10 +305,37 @@ function ResultCard({ r, index, pageId }) {
   return (
     <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
       <div className="flex items-center justify-between text-xs text-zinc-400">
-        <span className="font-medium text-zinc-200">Parca {index + 1}</span>
+        <span className="font-medium text-zinc-200">{r.label || `Parca ${index + 1}`}</span>
         <span>{r.duration != null ? fmt(r.duration) : ''}{r.start != null ? ` (${fmt(r.start)} → ${fmt(r.end)})` : ''}</span>
       </div>
-      <video src={r.url} controls className="w-full rounded border border-zinc-800 bg-black" />
+      <video ref={vidRef} src={r.url} controls className="w-full rounded border border-zinc-800 bg-black" />
+
+      {/* Ekstra araclar */}
+      <div className="flex flex-wrap gap-1.5">
+        <button onClick={grabThumb} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-amber-500/50 disabled:opacity-50">{working === 'thumb' ? <Loader2 className="h-3 w-3 animate-spin" /> : <ImageIcon className="h-3 w-3" />} Kapak Al</button>
+        <button onClick={makeVertical} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-fuchsia-500/50 disabled:opacity-50">{working === 'vertical' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Smartphone className="h-3 w-3" />} 9:16 Yap</button>
+        <button onClick={muteVideo} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-red-500/50 disabled:opacity-50">{working === 'mute' ? <Loader2 className="h-3 w-3 animate-spin" /> : <VolumeX className="h-3 w-3" />} Sesi Kaldir</button>
+        <button onClick={() => setShowMusic((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-emerald-500/50 disabled:opacity-50">{working === 'music' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music className="h-3 w-3" />} Muzik Bindir</button>
+      </div>
+
+      {showMusic && (
+        <div className="space-y-2 rounded-lg border border-emerald-500/20 bg-emerald-950/10 p-2">
+          <div className="flex flex-wrap gap-1.5">
+            {presets.map((p) => (<button key={p.id} onClick={() => setPresetId(p.id)} className={`rounded-full border px-2.5 py-1 text-[11px] ${presetId === p.id ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300' : 'border-zinc-700 text-zinc-400'}`}>{p.name}</button>))}
+          </div>
+          {presetId && <audio controls src={`/api/media?dir=music&file=${presetId}.mp3`} className="h-8 w-full" />}
+          <Button onClick={addMusic} disabled={!!working} size="sm" className="w-full bg-emerald-600 hover:bg-emerald-500"><Music className="mr-2 h-4 w-4" /> Secili Muzigi Bindir</Button>
+        </div>
+      )}
+
+      {thumb && (
+        <div className="space-y-1 rounded-lg border border-amber-500/20 bg-amber-950/10 p-2">
+          <p className="text-[11px] text-amber-300">Kapak Gorseli</p>
+          <img src={thumb} alt="kapak" className="w-full rounded border border-zinc-800" />
+          <a href={thumb} download className="inline-flex items-center gap-1 text-[11px] text-amber-200 hover:underline"><Download className="h-3 w-3" /> Kapagi Indir</a>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <a href={r.url} download className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-700/50 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-900/30"><Download className="h-3.5 w-3.5" /> Indir</a>
         <button onClick={() => setShowSched((s) => !s)} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-indigo-700/50 bg-indigo-950/20 px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-900/30"><CalendarClock className="h-3.5 w-3.5" /> Zamanla</button>

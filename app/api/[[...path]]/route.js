@@ -38,7 +38,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
-import { probeDuration, trimVideo } from '@/lib/video'
+import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio } from '@/lib/video'
 import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
@@ -1103,6 +1103,77 @@ async function handleRoute(request, { params }) {
         return json({ segments })
       } catch (e) {
         await log('AI_VISION', 'ERROR', 'Video bolme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Videodan kapak (thumbnail) al -> PNG
+    if (route === '/video/thumbnail' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      const outFile = `thumb_${uuidv4()}.png`
+      try {
+        await extractThumbnail({ inputPath: inAbs, time: Number(b.time) || 0, outPath: path.join(UPLOAD_DIR, outFile) })
+        return json({ file: outFile, url: `/api/media?dir=uploads&file=${outFile}`, time: Number(b.time) || 0 })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Kapak alma hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Videoyu dikey 9:16 (Reels formati) yap -> renders kaydi
+    if (route === '/video/vertical' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      const id = uuidv4()
+      const outFile = `vert_${id}.mp4`
+      try {
+        await toVertical({ inputPath: inAbs, outPath: path.join(UPLOAD_DIR, outFile) })
+        let duration = null; try { duration = Number((await probeDuration(path.join(UPLOAD_DIR, outFile))).toFixed(2)) } catch (e) {}
+        const doc = { id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`, source: 'video-vertical', duration, title: '', description: '', error: null, createdAt: new Date(), updatedAt: new Date() }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Video 9:16 yapildi', { id })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', '9:16 donusturme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Videonun sesini kaldir veya muzikle degistir -> renders kaydi
+    if (route === '/video/audio' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      const action = b.action === 'music' ? 'music' : 'mute'
+      const id = uuidv4()
+      const outFile = `${action}_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      try {
+        if (action === 'mute') {
+          await stripAudio({ inputPath: inAbs, outPath: outAbs })
+        } else {
+          let audioPath = null
+          if (b.audioFile) { const ap = path.join(UPLOAD_DIR, safeName(b.audioFile)); if (fs.existsSync(ap)) audioPath = ap }
+          if (!audioPath) audioPath = presetPath(b.presetId || 'enerjik')
+          if (!audioPath) return json({ error: 'Muzik bulunamadi (preset veya yuklenen dosya)' }, 400)
+          await replaceAudio({ inputPath: inAbs, audioPath, outPath: outAbs })
+        }
+        let duration = null; try { duration = Number((await probeDuration(outAbs)).toFixed(2)) } catch (e) {}
+        const doc = { id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`, source: 'video-' + action, duration, title: '', description: '', error: null, createdAt: new Date(), updatedAt: new Date() }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Video ses islemi: ' + action, { id })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration, action })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Video ses islemi hatasi', { error: e.message })
         return json({ error: e.message }, 502)
       }
     }
