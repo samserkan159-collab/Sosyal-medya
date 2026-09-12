@@ -988,6 +988,26 @@ async function handleRoute(request, { params }) {
       return json(PRESETS.map((p) => ({ id: p.id, name: p.name, url: `/api/media?dir=music&file=${p.id}.mp3` })))
     }
 
+    // ---- LOGO KUTUPHANESI (max 5, base64 MongoDB) ----
+    if (route === '/studio/logos' && method === 'GET') {
+      const logos = await database.collection('studio_logos').find({}).sort({ createdAt: -1 }).toArray()
+      return json(logos.map(strip))
+    }
+    if (route === '/studio/logos' && method === 'POST') {
+      const b = await request.json()
+      if (!b.image || !String(b.image).startsWith('data:image')) return json({ error: 'Gecerli bir gorsel (dataUrl) zorunlu' }, 400)
+      const count = await database.collection('studio_logos').countDocuments()
+      if (count >= 5) return json({ error: 'En fazla 5 logo saklayabilirsiniz. Once bir logoyu silin.' }, 400)
+      const doc = { id: uuidv4(), name: b.name || `Logo ${count + 1}`, image: b.image, createdAt: new Date() }
+      await database.collection('studio_logos').insertOne(doc)
+      return json(strip(doc))
+    }
+    if (route.startsWith('/studio/logos/') && method === 'DELETE') {
+      const id = pathSegments[2]
+      await database.collection('studio_logos').deleteOne({ id })
+      return json({ ok: true })
+    }
+
     // Arka plan silme (Remove.bg / Photoroom)
     if (route === '/studio/remove-bg' && method === 'POST') {
       if (!bgConfigured()) return json({ error: `Arka plan silme icin ${bgProvider() === 'photoroom' ? 'PHOTOROOM_API_KEY' : 'REMOVE_BG_API_KEY'} gerekli` }, 503)

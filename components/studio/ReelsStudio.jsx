@@ -53,18 +53,40 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
 
   const [scenes, setScenes] = useState([])
   const [transition, setTransition] = useState('fade')
+  const [transitionDur, setTransitionDur] = useState(0.7)
+  const [logos, setLogos] = useState([])
+  const [logoBusy, setLogoBusy] = useState(false)
   const [aiBusy, setAiBusy] = useState(false)
   const [aiContext, setAiContext] = useState('')
   const [customTexts, setCustomTexts] = useState('')
   const [customBusy, setCustomBusy] = useState(false)
 
-  const uploadLogo = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return
-    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+  // Bir logo dataUrl'ini tuvale yerlestir
+  const addLogoToCanvas = async (dataUrl) => {
     const img = await f().FabricImage.fromURL(dataUrl, { crossOrigin: 'anonymous' })
     const scale = 100 / img.width
     img.set({ left: CW - 70, top: 46, originX: 'center', originY: 'center', scaleX: scale, scaleY: scale })
     place(img); toast.success('Logo eklendi — dilediginiz yere tasiyin')
+  }
+
+  // Kutuphaneye logo yukle (base64 -> MongoDB, max 5)
+  const uploadLogo = async (e) => {
+    const file = e.target.files?.[0]; if (!file) { return }
+    e.target.value = ''
+    if (logos.length >= 5) { toast.error('En fazla 5 logo saklayabilirsiniz. Once bir logoyu silin.'); return }
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+    setLogoBusy(true)
+    try {
+      const saved = await api('/studio/logos', { method: 'POST', body: JSON.stringify({ image: dataUrl, name: file.name?.replace(/\.[^.]+$/, '') || undefined }) })
+      setLogos((l) => [saved, ...l])
+      await addLogoToCanvas(dataUrl)
+      toast.success('Logo kutuphaneye kaydedildi')
+    } catch (err) { toast.error(err.message) } finally { setLogoBusy(false) }
+  }
+
+  const deleteLogo = async (id) => {
+    try { await api('/studio/logos/' + id, { method: 'DELETE' }); setLogos((l) => l.filter((x) => x.id !== id)); toast.success('Logo silindi') }
+    catch (err) { toast.error(err.message) }
   }
 
   const placeBox = (fab, b) => {
@@ -165,6 +187,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   }, [])
 
   useEffect(() => { api('/studio/presets').then(setPresets).catch(() => {}) }, [])
+  useEffect(() => { api('/studio/logos').then(setLogos).catch(() => {}) }, [])
 
   const f = () => fabricRef.current
   const c = () => canvasRef.current
@@ -226,7 +249,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
     setRendering(true); setJob(null)
     try {
       const body = scenes.length > 0
-        ? { scenes: scenes.map((s) => ({ posterDataUrl: s.dataUrl, duration: s.duration })), transition, transitionDur: 0.7, audioMode, presetId, audioFile }
+        ? { scenes: scenes.map((s) => ({ posterDataUrl: s.dataUrl, duration: s.duration })), transition, transitionDur, audioMode, presetId, audioFile }
         : { posterDataUrl, audioMode, presetId, audioFile }
       const { jobId } = await api('/studio/render', { method: 'POST', body: JSON.stringify(body) })
       const poll = setInterval(async () => {
@@ -362,6 +385,29 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
 
       <div className="lg:col-span-2 space-y-6">
         <Card className="border-zinc-800 bg-zinc-900/70">
+          <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Layers className="h-4 w-4 text-amber-400" /> Logo Kutuphanesi <span className="ml-auto text-xs font-normal text-zinc-500">{logos.length}/5</span></CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-zinc-500">Sik kullandiginiz logolari kaydedin, her tasarima tek tikla ekleyin. En fazla 5 logo.</p>
+            <label className={`inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-amber-700/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:border-amber-500/50 ${(logoBusy || logos.length >= 5) ? 'pointer-events-none opacity-50' : ''}`}>
+              {logoBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} {logos.length >= 5 ? 'Limit doldu (5/5)' : 'Yeni Logo Yukle & Kaydet'}
+              <input type="file" accept="image/*" onChange={uploadLogo} disabled={logoBusy || logos.length >= 5} className="hidden" />
+            </label>
+            {logos.length > 0 ? (
+              <div className="grid grid-cols-3 gap-2">
+                {logos.map((lg) => (
+                  <div key={lg.id} className="group relative">
+                    <button onClick={() => addLogoToCanvas(lg.image)} title="Tuvale ekle" className="flex h-16 w-full items-center justify-center rounded-lg border border-zinc-700 bg-zinc-950 p-1 hover:border-amber-500/60">
+                      <img src={lg.image} alt={lg.name} className="max-h-full max-w-full object-contain" />
+                    </button>
+                    <button onClick={() => deleteLogo(lg.id)} title="Sil" className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-white opacity-0 transition-opacity group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="text-center text-xs text-zinc-600">Henuz logo yok</p>}
+          </CardContent>
+        </Card>
+
+        <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Layers className="h-4 w-4 text-cyan-400" /> Coklu Sahne (Opsiyonel)</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-zinc-500">Tuvaldeki tasarimi "Sahne Ekle" ile kaydedin, sonra tuvali degistirip yeni sahneler ekleyin. 2+ sahne varsa video secilen gecisle birlestirilir. Sahne eklemezseniz tek afis 6sn render edilir — secim sizde.</p>
@@ -388,6 +434,14 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
                     <option value="dissolve">Erime (dissolve)</option>
                     <option value="smoothleft">Akici Sol (smoothleft)</option>
                   </select>
+                  <div className="mt-3">
+                    <label className="mb-1 flex items-center justify-between text-xs text-zinc-500">
+                      <span>Gecis Suresi (her gecis icin)</span>
+                      <span className="font-semibold text-cyan-300">{transitionDur.toFixed(1)} sn</span>
+                    </label>
+                    <input type="range" min="0.3" max="2" step="0.1" value={transitionDur} onChange={(e) => setTransitionDur(Number(e.target.value))} className="w-full accent-cyan-500" />
+                    <div className="flex justify-between text-[10px] text-zinc-600"><span>Hizli 0.3sn</span><span>Yavas 2sn</span></div>
+                  </div>
                   <div className="mt-2 flex items-center gap-3">
                     <TransitionPreview transition={transition} a={scenes[0]?.thumb} b={scenes[1]?.thumb} />
                     <p className="text-xs text-zinc-500">Secilen gecisin canli onizlemesi (render oncesi).</p>
