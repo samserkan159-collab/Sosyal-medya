@@ -38,7 +38,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
-import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio } from '@/lib/video'
+import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio, probeVideoInfo, prependPoster } from '@/lib/video'
 import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
@@ -1103,6 +1103,69 @@ async function handleRoute(request, { params }) {
         return json({ segments })
       } catch (e) {
         await log('AI_VISION', 'ERROR', 'Video bolme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // ---- AFIS KUTUPHANESI (Reels Studyosundan kaydedilen posterler) ----
+    if (route === '/posters' && method === 'GET') {
+      const posters = await database.collection('posters').find({}).sort({ createdAt: -1 }).toArray()
+      return json(posters.map(strip))
+    }
+    if (route === '/posters' && method === 'POST') {
+      const b = await request.json()
+      if (!b.dataUrl || !String(b.dataUrl).startsWith('data:image')) return json({ error: 'Gecerli bir afis gorseli (dataUrl) zorunlu' }, 400)
+      ensureDirs()
+      const count = await database.collection('posters').countDocuments()
+      if (count >= 12) return json({ error: 'En fazla 12 afis saklayabilirsiniz. Once bir afis silin.' }, 400)
+      const id = uuidv4()
+      const file = `intro_${id}.png`
+      const data = String(b.dataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+      await fsp.writeFile(path.join(UPLOAD_DIR, file), Buffer.from(data, 'base64'))
+      const doc = { id, name: b.name || `Afis ${count + 1}`, file, url: `/api/media?dir=uploads&file=${file}`, thumb: b.thumb || null, createdAt: new Date() }
+      await database.collection('posters').insertOne(doc)
+      return json(strip(doc))
+    }
+    if (route.startsWith('/posters/') && method === 'DELETE') {
+      const id = pathSegments[1]
+      await database.collection('posters').deleteOne({ id })
+      return json({ ok: true })
+    }
+
+    // Afisi videonun onune giris (intro) olarak ekle -> renders kaydi
+    if (route === '/video/prepend-poster' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file (video) zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      // afis kaynagi: kayitli posterFile veya dataUrl
+      let posterAbs
+      if (b.posterFile) {
+        posterAbs = path.join(UPLOAD_DIR, safeName(b.posterFile))
+        if (!posterAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(posterAbs)) return json({ error: 'afis dosyasi yok' }, 404)
+      } else if (b.posterDataUrl) {
+        const pf = `introposter_${uuidv4()}.png`
+        posterAbs = path.join(UPLOAD_DIR, pf)
+        const data = String(b.posterDataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+        await fsp.writeFile(posterAbs, Buffer.from(data, 'base64'))
+      } else {
+        return json({ error: 'posterFile veya posterDataUrl zorunlu' }, 400)
+      }
+      const id = uuidv4()
+      const outFile = `intro_out_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      try {
+        const info = await probeVideoInfo(inAbs)
+        const dur = Math.max(0.5, Math.min(10, Number(b.duration) || 2))
+        await prependPoster({ posterPath: posterAbs, videoPath: inAbs, duration: dur, outPath: outAbs, info })
+        let duration = null; try { duration = Number((await probeDuration(outAbs)).toFixed(2)) } catch (e) {}
+        const doc = { id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`, source: 'video-intro', duration, title: '', description: '', error: null, createdAt: new Date(), updatedAt: new Date() }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Afis video onune eklendi', { id, dur })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Afis ekleme hatasi', { error: e.message })
         return json({ error: e.message }, 502)
       }
     }

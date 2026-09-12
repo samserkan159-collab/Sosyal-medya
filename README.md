@@ -28,7 +28,7 @@ Facebook denetimi, Comment-to-DM otomasyonu, çok platformlu içerik üretimi, R
 | **💬 Comment-to-DM Motoru** | Facebook videosuna gelen "fiyat" yorumlarını tarar → herkese açık yanıt + Messenger DM + Telegram bildirimi gönderir, Lead oluşturur |
 | **✍️ İçerik Fabrikası — Metin Üretici** | GPT-4o ile FB/IG/YT/TikTok için içerik üretir, telefon mockup önizlemesi gösterir |
 | **🎨 İçerik Fabrikası — Afiş & Reels Stüdyosu** | Fabric.js sürükle-bırak 9:16 tuval editörü: yazı, ok, şekil, logo, AI metin önerileri, hizalama kılavuzları, kilitleme, **Logo Kütüphanesi (max 5)** |
-| **🎬 İçerik Fabrikası — Video Kesici** | Yüklenen videoyu **kesme (trim)** ve **bölme (split)** — görsel zaman çizelgesi, parçalı yükleme, indir + yayınla + zamanla |
+| **🎬 İçerik Fabrikası — Video Kesici** | Yüklenen videoyu **kesme (trim)** ve **bölme (split)** — görsel zaman çizelgesi, parçalı yükleme, indir + yayınla + zamanla. Ayrıca: **kapak (thumbnail) alma**, **9:16 dikey dönüştürme**, **sesi kaldırma / müzik bindirme** ve **hazırlanan afişi videonun önüne giriş (intro) olarak ekleme** |
 | **🎞️ Reels Render Motoru** | FFmpeg ile çok sahneli dikey video (MP4) üretir: Ken Burns zoom, geçiş efektleri (ayarlanabilir süre), telifsiz müzik |
 | **📅 Takvim & Zamanlama** | Aylık takvim ızgarası; videoları IG/FB/YT'ye otomatik yayınlayan cron zamanlayıcı |
 | **👥 Müşteri Masası (CRM)** | Tüm platformlardan gelen lead'leri durum takibiyle listeler |
@@ -170,6 +170,14 @@ Meta webhook'a gelen yorum → `lib/meta.js` yorumu tarar → "fiyat/kaç tl" gi
 ### Video Kesici
 `components/studio/VideoCutter.jsx` videoyu **parçalı (chunked, 4MB)** yükler → `ffprobe` ile süre okunur → görsel timeline'da başlangıç/bitiş seçilir. **Kes (trim)** tek parça, **Böl (split)** eşit parça veya nokta bazlı böler (`lib/video.js`). Her parça `renders` koleksiyonuna `DONE` olarak kaydedilir → indirilebilir veya doğrudan YouTube/FB/IG'ye yayınlanır ya da takvime zamanlanır.
 
+Her sonuç parçası için ek araçlar:
+- **Kapak Al**: Videoyu istenen ana getirip o kareden PNG kapak üretir (`extractThumbnail`)
+- **9:16 Yap**: Videoyu dikey Reels formatına (1080×1920, merkez kırpma) çevirir (`toVertical`)
+- **Sesi Kaldır / Müzik Bindir**: Sesi kaldırır veya telifsiz preset müzik bindirir (`stripAudio` / `replaceAudio`)
+
+### Afişi Video Önüne Ekleme (Intro)
+Reels Stüdyosu'nda tasarlanan afiş **"Afişi Video Girişi İçin Kaydet"** ile `posters` koleksiyonuna (PNG + thumbnail) kaydedilir. Video Kesici'deki **"Afiş / Giriş Ekle"** panelinden bu afiş (veya yeni yüklenen bir görsel) seçilir, süre (0.5–10sn) belirlenir ve `POST /api/video/prepend-poster` ile afiş, videonun resolüsyonuna uyumlanıp başına giriş olarak eklenir (`prependPoster`, FFmpeg concat filtresi + sessiz videolar için otomatik sessiz ses ekleme).
+
 ### Zamanlama
 Üretilen/kesilen her video `renders` koleksiyonunda bir `jobId` alır. `/api/schedule` ile platform + tarih seçilir; `lib/scheduler.js` cron zamanı gelince ilgili yayınlama modülünü tetikler.
 
@@ -187,7 +195,8 @@ Tümü `/api` ön ekiyle çalışır.
 **Lead:** `GET /leads`, `PUT /leads/:id`
 **Stüdyo:** `GET /studio/presets`, `POST /studio/render`, `GET /studio/render/:id`, `POST /studio/suggest-labels`, `POST /studio/custom-boxes`, `POST /studio/remove-bg`, `POST /studio/save-poster`, `POST /studio/upload-audio`
 **Logo Kütüphanesi:** `GET/POST /studio/logos`, `DELETE /studio/logos/:id`
-**Video Kesici:** `POST /video/upload-chunk`, `POST /video/trim`, `POST /video/split`
+**Afiş (Poster) Kütüphanesi:** `GET/POST /posters`, `DELETE /posters/:id`
+**Video Kesici:** `POST /video/upload-chunk`, `POST /video/trim`, `POST /video/split`, `POST /video/thumbnail`, `POST /video/vertical`, `POST /video/audio`, `POST /video/prepend-poster`
 **Yayınlama:** `POST /reels/publish-fb`, `POST /reels/publish-ig`, `POST /youtube/upload-short`, `POST /youtube/publish`
 **YouTube:** `GET /youtube/status`, `POST /youtube/scan`, `POST /youtube/simulate`
 **OAuth:** `GET /oauth/google/url`, `GET /oauth/google/callback`, `GET /oauth/google/status`
@@ -206,6 +215,7 @@ Tümü `/api` ön ekiyle çalışır.
 | `leads` | platform, externalUserId, userMessage, sentiment, status |
 | `renders` | id, status, outFile, videoUrl, source, duration (Reels & video kesici çıktıları) |
 | `studio_logos` | id, name, image (base64), createdAt (max 5) |
+| `posters` | id, name, file, url, thumb, createdAt (Reels afişleri — video girişi için, max 12) |
 | `schedules` | jobId, platforms, caption, scheduledAt, status |
 | `system_logs` | type, level, message, createdAt |
 

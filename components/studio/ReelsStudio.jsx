@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   ImageUp, Scissors, Type, MoveUpRight, Square, Circle as CircleIcon, Star, RectangleHorizontal,
   Music, Video, Youtube, Facebook, Instagram, Loader2, Trash2, ArrowUp, ArrowDown, CalendarClock, Bold,
-  Sparkles, Layers, Plus,
+  Sparkles, Layers, Plus, Film,
 } from 'lucide-react'
 
 const api = async (path, opts) => {
@@ -273,6 +273,19 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const removeScene = (i) => setScenes((s) => s.filter((_, x) => x !== i))
   const setSceneDur = (i, v) => setScenes((s) => s.map((sc, x) => (x === i ? { ...sc, duration: v } : sc)))
 
+  const [introSaving, setIntroSaving] = useState(false)
+  const saveIntroPoster = async () => {
+    const canvas = c(); if (!canvas) return
+    canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
+    const dataUrl = canvas.toDataURL({ format: 'png', multiplier: MULT })
+    const thumb = canvas.toDataURL({ format: 'png', multiplier: 0.25 })
+    setIntroSaving(true)
+    try {
+      await api('/posters', { method: 'POST', body: JSON.stringify({ dataUrl, thumb }) })
+      toast.success('Afis kaydedildi! Video Kesici sekmesinde bir videonun onune ekleyebilirsiniz.')
+    } catch (e) { toast.error(e.message) } finally { setIntroSaving(false) }
+  }
+
   const aiSuggest = async () => {
     const canvas = c(); const img = canvas.getObjects().find((o) => o.type === 'image')
     if (!img) { toast.error('Once bir cihaz gorseli yukleyin'); return }
@@ -412,6 +425,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
           <CardContent className="space-y-3">
             <p className="text-xs text-zinc-500">Tuvaldeki tasarimi "Sahne Ekle" ile kaydedin, sonra tuvali degistirip yeni sahneler ekleyin. 2+ sahne varsa video secilen gecisle birlestirilir. Sahne eklemezseniz tek afis 6sn render edilir — secim sizde.</p>
             <Button onClick={captureScene} disabled={!ready} variant="outline" className="w-full border-cyan-700/50 bg-cyan-950/20 text-cyan-200 hover:bg-cyan-900/30"><Plus className="mr-2 h-4 w-4" /> Bu Tuvali Sahne Olarak Ekle</Button>
+            <Button onClick={saveIntroPoster} disabled={!ready || introSaving} variant="outline" className="w-full border-orange-700/50 bg-orange-950/20 text-orange-200 hover:bg-orange-900/30">{introSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />} Afisi Video Girisi Icin Kaydet</Button>
             {scenes.length > 0 && (
               <>
                 <div className="flex flex-wrap gap-2">

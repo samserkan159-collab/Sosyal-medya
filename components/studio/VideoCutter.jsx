@@ -43,10 +43,43 @@ export default function VideoCutter({ pageId }) {
 
   const [results, setResults] = useState([]) // [{jobId,url,duration,start,end}]
   const [presets, setPresets] = useState([])
+  const [posters, setPosters] = useState([])
+  const [introOpen, setIntroOpen] = useState(false)
+  const [introPoster, setIntroPoster] = useState(null) // {file} or {dataUrl}
+  const [introDur, setIntroDur] = useState(2)
+  const [introBusy, setIntroBusy] = useState(false)
 
   useEffect(() => { api('/studio/presets').then(setPresets).catch(() => {}) }, [])
+  useEffect(() => { api('/posters').then(setPosters).catch(() => {}) }, [])
 
   const addResult = (r) => setResults((prev) => [...prev, r])
+
+  const uploadIntroImage = async (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    e.target.value = ''
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f) })
+    setIntroPoster({ dataUrl, thumb: dataUrl, name: f.name })
+  }
+
+  const prependIntro = async () => {
+    if (!file) return
+    if (!introPoster) { toast.error('Once bir afis secin veya yukleyin'); return }
+    setIntroBusy(true)
+    try {
+      const body = { file: file.file, duration: introDur }
+      if (introPoster.file) body.posterFile = introPoster.file
+      else body.posterDataUrl = introPoster.dataUrl
+      const res = await api('/video/prepend-poster', { method: 'POST', body: JSON.stringify(body) })
+      addResult({ ...res, label: 'Afisli Giris' })
+      setIntroOpen(false)
+      toast.success('Afis videonun onune eklendi! Sonuclara bakin.')
+    } catch (e) { toast.error(e.message) } finally { setIntroBusy(false) }
+  }
+
+  const deleteIntroPoster = async (id) => {
+    try { await api('/posters/' + id, { method: 'DELETE' }); setPosters((p) => p.filter((x) => x.id !== id)); if (introPoster?._id === id) setIntroPoster(null) }
+    catch (e) { toast.error(e.message) }
+  }
 
   const onUpload = async (e) => {
     const f = e.target.files?.[0]; if (!f) return
@@ -206,6 +239,41 @@ export default function VideoCutter({ pageId }) {
                     <Button onClick={doSplit} disabled={busy} className="bg-fuchsia-600 hover:bg-fuchsia-500">{busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <SplitSquareHorizontal className="mr-2 h-4 w-4" />} Videoyu Bol</Button>
                   )}
                   <Button onClick={() => { setFile(null); setResults([]); setPoints([]) }} variant="outline" className="border-zinc-700 text-zinc-300">Yeni Video</Button>
+                </div>
+
+                {/* Afis / Intro onune ekleme */}
+                <div className="rounded-lg border border-orange-500/20 bg-orange-950/10 p-3">
+                  <button onClick={() => setIntroOpen((s) => !s)} className="flex w-full items-center gap-2 text-sm font-medium text-orange-300">
+                    <Film className="h-4 w-4" /> Afis / Giris Ekle (video onune) <span className="ml-auto text-xs text-zinc-500">{introOpen ? 'gizle' : 'ac'}</span>
+                  </button>
+                  {introOpen && (
+                    <div className="mt-3 space-y-3">
+                      <p className="text-xs text-zinc-500">Reels Studyosunda "Afisi Video Girisi Icin Kaydet" ile kaydettiginiz afisi secin veya yeni bir gorsel yukleyin. Afis, videonun basina giris olarak eklenir.</p>
+                      {posters.length > 0 && (
+                        <div className="grid grid-cols-4 gap-2">
+                          {posters.map((p) => (
+                            <div key={p.id} className="group relative">
+                              <button onClick={() => setIntroPoster({ file: p.file, _id: p.id })} className={`aspect-[9/16] w-full overflow-hidden rounded-md border ${introPoster?.file === p.file ? 'border-orange-500 ring-2 ring-orange-500/50' : 'border-zinc-700'} bg-zinc-950`}>
+                                <img src={p.thumb || p.url} alt={p.name} className="h-full w-full object-cover" />
+                              </button>
+                              <button onClick={() => deleteIntroPoster(p.id)} className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-white opacity-0 transition-opacity group-hover:opacity-100"><Trash2 className="h-3 w-3" /></button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 hover:border-orange-500/50">
+                          <ImageIcon className="h-3.5 w-3.5" /> Yeni Afis Yukle<input type="file" accept="image/*" onChange={uploadIntroImage} className="hidden" />
+                        </label>
+                        {introPoster && <span className="text-xs text-emerald-400">Afis secildi ✓</span>}
+                      </div>
+                      <div>
+                        <label className="mb-1 flex items-center justify-between text-xs text-zinc-500"><span>Giris suresi</span><span className="font-semibold text-orange-300">{introDur.toFixed(1)} sn</span></label>
+                        <input type="range" min="0.5" max="10" step="0.5" value={introDur} onChange={(e) => setIntroDur(Number(e.target.value))} className="w-full accent-orange-500" />
+                      </div>
+                      <Button onClick={prependIntro} disabled={introBusy || !introPoster} className="w-full bg-orange-600 hover:bg-orange-500">{introBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />} Afisi Videonun Onune Ekle</Button>
+                    </div>
+                  )}
                 </div>
               </>
             )}
