@@ -55,6 +55,51 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const [transition, setTransition] = useState('fade')
   const [aiBusy, setAiBusy] = useState(false)
   const [aiContext, setAiContext] = useState('')
+  const [customTexts, setCustomTexts] = useState('')
+  const [customBusy, setCustomBusy] = useState(false)
+
+  const uploadLogo = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+    const img = await f().FabricImage.fromURL(dataUrl, { crossOrigin: 'anonymous' })
+    const scale = 100 / img.width
+    img.set({ left: CW - 70, top: 46, originX: 'center', originY: 'center', scaleX: scale, scaleY: scale })
+    place(img); toast.success('Logo eklendi — dilediginiz yere tasiyin')
+  }
+
+  const placeBox = (fab, b) => {
+    const kind = b.kind || 'badge'
+    const left = Math.max(6, Math.min(CW - 60, (Number(b.xPct) || 15) / 100 * CW))
+    const top = Math.max(6, Math.min(CH - 40, (Number(b.yPct) || 20) / 100 * CH))
+    const styles = {
+      title: { fontSize: 30, fontWeight: 'bold', fill: '#ffffff', width: 280 },
+      badge: { fontSize: 20, fontWeight: 'bold', fill: '#111827', backgroundColor: '#fbbf24', width: 140, textAlign: 'center' },
+      feature: { fontSize: 16, fill: '#e5e7eb', backgroundColor: '#1e293b', width: 180 },
+      cta: { fontSize: 20, fill: '#ffffff', backgroundColor: '#16a34a', width: 240, textAlign: 'center' },
+    }
+    const st = styles[kind] || styles.badge
+    const txt = kind === 'feature' ? '⚡ ' + b.text : b.text
+    place(new fab.Textbox(txt, { left, top, padding: 4, fontFamily: 'Arial', ...st }))
+  }
+
+  const customBoxes = async () => {
+    const tokens = customTexts.split('/').map((t) => t.trim()).filter(Boolean)
+    if (!tokens.length) { toast.error('Metinleri / ile ayirarak yazin (or: Hizli Servis / 2 Yil Garanti / Ucretsiz Kesif)'); return }
+    const canvas = c(); const img = canvas.getObjects().find((o) => o.type === 'image')
+    setCustomBusy(true)
+    try {
+      let boxes = []
+      if (img) {
+        const r = await api('/studio/custom-boxes', { method: 'POST', body: JSON.stringify({ image: img.toDataURL({ format: 'png' }), texts: tokens, context: aiContext }) })
+        boxes = r.boxes || []
+      }
+      if (!boxes.length) boxes = tokens.map((t, i) => ({ text: t, kind: i === 0 ? 'title' : 'badge', xPct: 12, yPct: 12 + i * 16 }))
+      const fab = f()
+      boxes.forEach((b) => placeBox(fab, b))
+      canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
+      toast.success(boxes.length + ' kutu gorsele uygun sekilde eklendi')
+    } catch (e) { toast.error(e.message) } finally { setCustomBusy(false) }
+  }
 
   const lockToggle = () => {
     const canvas = c(); const o = canvas.getActiveObject(); if (!o) return
@@ -96,6 +141,23 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
       canvas.on('selection:created', sync)
       canvas.on('selection:updated', sync)
       canvas.on('selection:cleared', () => setSel(null))
+
+      // Hizalama kilavuzlari (snap to center)
+      const cx = CW / 2, cy = CH / 2
+      const vLine = new fabric.Line([cx, 0, cx, CH], { stroke: '#6366f1', strokeDashArray: [5, 5], selectable: false, evented: false, opacity: 0, excludeFromExport: true })
+      const hLine = new fabric.Line([0, cy, CW, cy], { stroke: '#6366f1', strokeDashArray: [5, 5], selectable: false, evented: false, opacity: 0, excludeFromExport: true })
+      canvas.add(vLine, hLine)
+      canvas.on('object:moving', (e) => {
+        const o = e.target; if (!o) return
+        const p = o.getCenterPoint(); const snap = 8
+        vLine.set('opacity', 0); hLine.set('opacity', 0)
+        if (Math.abs(p.x - cx) < snap) { o.set('left', o.left + (cx - p.x)); vLine.set('opacity', 1) }
+        if (Math.abs(p.y - cy) < snap) { o.set('top', o.top + (cy - p.y)); hLine.set('opacity', 1) }
+        canvas.bringObjectToFront(vLine); canvas.bringObjectToFront(hLine)
+      })
+      const hideGuides = () => { vLine.set('opacity', 0); hLine.set('opacity', 0); canvas.requestRenderAll() }
+      canvas.on('object:modified', hideGuides)
+      canvas.on('mouse:up', hideGuides)
       canvasRef.current = canvas
       setReady(true)
     })()
@@ -247,6 +309,9 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
               <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50">
                 <ImageUp className="h-3.5 w-3.5" /> Cihaz Yukle<input type="file" accept="image/*" onChange={uploadDevice} className="hidden" />
               </label>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50">
+                <Layers className="h-3.5 w-3.5" /> Logo Ekle<input type="file" accept="image/*" onChange={uploadLogo} className="hidden" />
+              </label>
               <button disabled={bgBusy} onClick={removeBg} className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50 disabled:opacity-50">
                 {bgBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />} Arka Plani Sil
               </button>
@@ -280,6 +345,11 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
             <div className="mb-3 flex flex-col gap-2 rounded-lg border border-fuchsia-500/20 bg-fuchsia-950/10 p-3 sm:flex-row sm:items-center">
               <input value={aiContext} onChange={(e) => setAiContext(e.target.value)} placeholder="Cihaz ne ise yariyor? (AI icin ipucu, or: 'oto klima gazi dolum cihazi')" className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200" />
               <button disabled={aiBusy} onClick={aiSuggest} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-fuchsia-600 px-3 py-2 text-xs text-white hover:bg-fuchsia-500 disabled:opacity-50">{aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} AI ile Kutulari Olustur</button>
+            </div>
+
+            <div className="mb-3 flex flex-col gap-2 rounded-lg border border-cyan-500/20 bg-cyan-950/10 p-3 sm:flex-row sm:items-center">
+              <input value={customTexts} onChange={(e) => setCustomTexts(e.target.value)} placeholder="Kendi metinleriniz: / ile ayirin (or: Hizli Servis / 2 Yil Garanti / Ucretsiz Kesif)" className="flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200" />
+              <button disabled={customBusy} onClick={customBoxes} className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-cyan-600 px-3 py-2 text-xs text-white hover:bg-cyan-500 disabled:opacity-50">{customBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} Metnimi Kutulara Dok</button>
             </div>
 
             <div className="flex justify-center rounded-xl border border-zinc-800 bg-zinc-950/60 p-4">
@@ -318,6 +388,10 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
                     <option value="dissolve">Erime (dissolve)</option>
                     <option value="smoothleft">Akici Sol (smoothleft)</option>
                   </select>
+                  <div className="mt-2 flex items-center gap-3">
+                    <TransitionPreview transition={transition} a={scenes[0]?.thumb} b={scenes[1]?.thumb} />
+                    <p className="text-xs text-zinc-500">Secilen gecisin canli onizlemesi (render oncesi).</p>
+                  </div>
                 </div>
                 <p className="text-xs text-cyan-300">{scenes.length} sahne · toplam ~{scenes.reduce((a, s) => a + Number(s.duration), 0)}sn</p>
               </>
@@ -383,3 +457,26 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
     </div>
   )
 }
+
+// Gecis efekti canli mini-onizleme (CSS tabanli)
+function TransitionPreview({ transition = 'fade', a, b }) {
+  const [phase, setPhase] = useState(0)
+  useEffect(() => { const t = setInterval(() => setPhase((p) => (p === 0 ? 1 : 0)), 2200); return () => clearInterval(t) }, [])
+  const bottomStyle = { backgroundImage: a ? `url(${a})` : 'linear-gradient(135deg,#4f46e5,#db2777)', backgroundSize: 'cover', backgroundPosition: 'center' }
+  const topBase = { position: 'absolute', inset: 0, backgroundSize: 'cover', backgroundPosition: 'center', backgroundImage: b ? `url(${b})` : 'linear-gradient(135deg,#0ea5e9,#22c55e)', transition: 'all 1.1s ease-in-out' }
+  const on = phase === 1
+  let dyn = {}
+  switch (transition) {
+    case 'slideright': dyn = { transform: on ? 'translateX(100%)' : 'translateX(0)' }; break
+    case 'smoothleft': dyn = { transform: on ? 'translateX(-100%)' : 'translateX(0)' }; break
+    case 'wipeleft': dyn = { clipPath: on ? 'inset(0 0 0 100%)' : 'inset(0 0 0 0)' }; break
+    case 'circleopen': dyn = { clipPath: on ? 'circle(0% at 50% 50%)' : 'circle(75% at 50% 50%)' }; break
+    default: dyn = { opacity: on ? 0 : 1 } // fade / dissolve
+  }
+  return (
+    <div className="relative h-[124px] w-[70px] overflow-hidden rounded-md border border-zinc-700 bg-zinc-900" style={bottomStyle}>
+      <div style={{ ...topBase, ...dyn }} />
+    </div>
+  )
+}
+

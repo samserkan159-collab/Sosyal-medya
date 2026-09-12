@@ -38,7 +38,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
-import { transcribeAudio, suggestPosterLabels } from '@/lib/ai'
+import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
 import fs from 'fs'
@@ -1103,6 +1103,20 @@ async function handleRoute(request, { params }) {
         return json(s)
       } catch (e) {
         await log('AI_VISION', 'ERROR', 'Afis oneri hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Kullanici metinlerini gorsele uygun kutulara dok
+    if (route === '/studio/custom-boxes' && method === 'POST') {
+      if (!aiConfigured()) return json({ error: 'AI yapilandirilmamis' }, 503)
+      const b = await request.json()
+      if (!b.image || !Array.isArray(b.texts) || !b.texts.length) return json({ error: 'image ve texts zorunlu' }, 400)
+      try {
+        const r = await customPosterBoxes(b.image, b.texts, b.context || '')
+        return json(r)
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Custom box hatasi', { error: e.message })
         return json({ error: e.message }, 502)
       }
     }
