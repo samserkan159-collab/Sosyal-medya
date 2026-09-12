@@ -29,6 +29,21 @@ import {
   listVideoCommentThreads,
   replyToYoutubeComment,
 } from '@/lib/youtube'
+import { listPageComments } from '@/lib/meta'
+import { bgConfigured, bgProvider, removeBackground } from '@/lib/bgremoval'
+import {
+  googleConfigured, authorizeUrl, exchangeCode, getValidAccessToken,
+  uploadShort, replyComment, redirectUri,
+} from '@/lib/googleoauth'
+import { publishFacebookReel } from '@/lib/fbreels'
+import { renderReels, PRESETS, presetPath } from '@/lib/reels'
+import { transcribeAudio } from '@/lib/ai'
+import { getSchedulerState, startScheduler, stopScheduler, setLast } from '@/lib/scheduler'
+import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
+import fs from 'fs'
+import fsp from 'fs/promises'
+import path from 'path'
+import os from 'os'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -36,12 +51,17 @@ export const dynamic = 'force-dynamic'
 // ---------- MongoDB ----------
 let client
 let db
+let connectPromise
 async function connectToMongo() {
-  if (!client) {
+  if (db) return db
+  if (!connectPromise) {
     client = new MongoClient(process.env.MONGO_URL)
-    await client.connect()
-    db = client.db(process.env.DB_NAME)
+    connectPromise = client.connect().then(() => {
+      db = client.db(process.env.DB_NAME)
+      return db
+    })
   }
+  await connectPromise
   return db
 }
 
@@ -110,6 +130,9 @@ function integrationsStatus() {
     youtube: youtubeConfigured(),
     youtubeReply: !!youtubeOAuthToken(),
     youtubeChannelId: youtubeChannelId(),
+    google: googleConfigured(),
+    bgRemoval: bgConfigured(),
+    bgProvider: bgProvider(),
     verifyToken: process.env.META_VERIFY_TOKEN || '',
     graphVersion: process.env.META_GRAPH_VERSION || 'v21.0',
   }
@@ -126,107 +149,149 @@ const REQUIRED_PERMISSIONS = [
   'instagram_manage_messages',
 ]
 
-// ================= COMMENT-TO-DM ENGINE =================
+// ================= COMMENT-TO-DM ENGINE (core, reusable) =================
+async function processFacebookCommentCore(database, page, c, opts = {}) {
+  // c: { commentId, fromId, fromName, message, postId }
+  const skipIfExists = opts.skipIfExists !== false
+  if (skipIfExists && c.commentId) {
+    const existing = await database.collection('leads').findOne({ commentId: c.commentId })
+    if (existing) return null
+  }
+  const pageId = page?.pageId
+  const token = page?.accessToken || process.env.PAGE_ACCESS_TOKEN
+  const commentTemplate = page?.commentTemplate || DEFAULT_COMMENT_TEMPLATE
+  const dmTemplate = page?.dmTemplate || DEFAULT_DM_TEMPLATE
+  const whatsapp = (page?.whatsappNumber || '').replace(/[^0-9]/g, '')
+  const autoReply = page ? page.autoReplyActive !== false : true
+
+  const lower = (c.message || '').toLowerCase()
+  const isPrice = PRICE_KEYWORDS.some((k) => lower.includes(k))
+  const sentiment = isPrice ? 'PRICE_INQUIRY' : 'GENERAL'
+
+  const lead = {
+    id: uuidv4(),
+    pageId: page?.id || null,
+    fbPageId: pageId,
+    platform: 'FACEBOOK_COMMENT',
+    externalUserId: c.fromId || 'unknown',
+    userName: c.fromName || 'Bilinmeyen Kullanici',
+    commentId: c.commentId || null,
+    postId: c.postId || null,
+    userMessage: c.message || '',
+    replySent: false,
+    dmSent: false,
+    status: 'NEW',
+    sentiment,
+    whatsappNumber: page?.whatsappNumber || null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+
+  if (isPrice && autoReply && token && c.commentId) {
+    try { await replyToComment(c.commentId, commentTemplate, token); lead.replySent = true }
+    catch (e) { await log('COMMENT_TO_DM', 'ERROR', 'Public yanit basarisiz', { error: e.message, comment: c.commentId }) }
+    try {
+      const dmText = whatsapp ? `${dmTemplate}\nhttps://wa.me/${whatsapp}` : dmTemplate
+      await sendPrivateReply(pageId, c.commentId, dmText, token); lead.dmSent = true
+    } catch (e) { await log('COMMENT_TO_DM', 'ERROR', 'Private DM basarisiz', { error: e.message, comment: c.commentId }) }
+  }
+
+  try {
+    if (c.commentId) await database.collection('leads').updateOne({ commentId: c.commentId }, { $setOnInsert: lead }, { upsert: true })
+    else await database.collection('leads').insertOne(lead)
+  } catch (e) { await log('COMMENT_TO_DM', 'WARN', 'Lead kaydedilemedi', { error: e.message }) }
+
+  if (isPrice) {
+    try {
+      const text =
+        `🚨 <b>YENI MUSTERI YAKALANDI!</b>\n\n` +
+        `👤 Kullanici: <b>${lead.userName}</b>\n` +
+        `💬 Yorum: <i>${c.message}</i>\n` +
+        `🎯 Islem: ${lead.replySent ? 'Yoruma yanit ✅' : 'Yanit ✖️'} | ${lead.dmSent ? 'Messenger DM ✅' : 'DM ✖️'}\n` +
+        `📊 Etiket: PRICE_INQUIRY`
+      await tgSendMessage(text, {
+        reply_markup: whatsapp ? { inline_keyboard: [[{ text: '💚 WhatsApp ile Yaz', url: `https://wa.me/${whatsapp}` }]] } : undefined,
+      })
+    } catch (e) { await log('TELEGRAM_BOT', 'WARN', 'Telegram alarmi gonderilemedi', { error: e.message }) }
+  }
+
+  await log('COMMENT_TO_DM', 'INFO', `Yorum islendi (${sentiment})`, { user: lead.userName, price: isPrice })
+  return { user: lead.userName, sentiment, replySent: lead.replySent, dmSent: lead.dmSent }
+}
+
 async function processMetaWebhook(database, body) {
   const results = []
   const entries = body.entry || []
   for (const entry of entries) {
     const pageId = entry.id
     const page = await database.collection('facebook_pages').findOne({ pageId })
-    const token = page?.accessToken || process.env.PAGE_ACCESS_TOKEN
-    const commentTemplate = page?.commentTemplate || DEFAULT_COMMENT_TEMPLATE
-    const dmTemplate = page?.dmTemplate || DEFAULT_DM_TEMPLATE
-    const whatsapp = (page?.whatsappNumber || '').replace(/[^0-9]/g, '')
-    const autoReply = page ? page.autoReplyActive !== false : true
-
     const changes = entry.changes || []
     for (const change of changes) {
       if (change.field !== 'feed') continue
       const v = change.value || {}
       if (v.item !== 'comment' || v.verb !== 'add') continue
-      // Sayfanin kendi yorumunu filtrele (dongu engelleme)
       if (v.from && String(v.from.id) === String(pageId)) continue
-
-      const message = v.message || ''
-      const lower = message.toLowerCase()
-      const isPrice = PRICE_KEYWORDS.some((k) => lower.includes(k))
-      const sentiment = isPrice ? 'PRICE_INQUIRY' : 'GENERAL'
-
-      const lead = {
-        id: uuidv4(),
-        pageId: page?.id || null,
-        fbPageId: pageId,
-        platform: 'FACEBOOK_COMMENT',
-        externalUserId: v.from?.id || 'unknown',
-        userName: v.from?.name || 'Bilinmeyen Kullanici',
-        commentId: v.comment_id || null,
-        postId: v.post_id || null,
-        userMessage: message,
-        replySent: false,
-        dmSent: false,
-        status: 'NEW',
-        sentiment,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }
-
-      if (isPrice && autoReply && token && v.comment_id) {
-        // a) Public comment reply
-        try {
-          await replyToComment(v.comment_id, commentTemplate, token)
-          lead.replySent = true
-        } catch (e) {
-          await log('COMMENT_TO_DM', 'ERROR', 'Public yanit basarisiz', { error: e.message, comment: v.comment_id })
-        }
-        // b) Private Messenger DM
-        try {
-          const dmText = whatsapp ? `${dmTemplate}\nhttps://wa.me/${whatsapp}` : dmTemplate
-          await sendPrivateReply(pageId, v.comment_id, dmText, token)
-          lead.dmSent = true
-        } catch (e) {
-          await log('COMMENT_TO_DM', 'ERROR', 'Private DM basarisiz', { error: e.message, comment: v.comment_id })
-        }
-      }
-
-      // d) Lead kaydet
-      try {
-        if (v.comment_id) {
-          await database.collection('leads').updateOne(
-            { commentId: v.comment_id },
-            { $setOnInsert: lead },
-            { upsert: true }
-          )
-        } else {
-          await database.collection('leads').insertOne(lead)
-        }
-      } catch (e) {
-        await log('COMMENT_TO_DM', 'WARN', 'Lead kaydedilemedi', { error: e.message })
-      }
-
-      // c) Telegram alarmi
-      if (isPrice) {
-        try {
-          const text =
-            `🚨 <b>YENI MUSTERI YAKALANDI!</b>\n\n` +
-            `👤 Kullanici: <b>${lead.userName}</b>\n` +
-            `💬 Yorum: <i>${message}</i>\n` +
-            `🎯 Islem: ${lead.replySent ? 'Yoruma yanit ✅' : 'Yanit ✖️'} | ${lead.dmSent ? 'Messenger DM ✅' : 'DM ✖️'}\n` +
-            `📊 Etiket: PRICE_INQUIRY`
-          await tgSendMessage(text, {
-            reply_markup: whatsapp
-              ? { inline_keyboard: [[{ text: '💚 WhatsApp ile Yaz', url: `https://wa.me/${whatsapp}` }]] }
-              : undefined,
-          })
-        } catch (e) {
-          await log('TELEGRAM_BOT', 'WARN', 'Telegram alarmi gonderilemedi', { error: e.message })
-        }
-      }
-
-      await log('COMMENT_TO_DM', 'INFO', `Yorum islendi (${sentiment})`, { user: lead.userName, price: isPrice })
-      results.push({ user: lead.userName, sentiment, replySent: lead.replySent, dmSent: lead.dmSent })
+      const r = await processFacebookCommentCore(
+        database,
+        page || { pageId },
+        { commentId: v.comment_id, fromId: v.from?.id, fromName: v.from?.name, message: v.message || '', postId: v.post_id },
+        { skipIfExists: true }
+      )
+      if (r) results.push(r)
     }
   }
   return results
+}
+
+// ================= AUTO SCAN (cron) =================
+async function scanAll(database) {
+  const summary = { facebook: 0, youtube: 0, at: new Date().toISOString() }
+  const pages = await database.collection('facebook_pages').find({}).toArray()
+  for (const page of pages) {
+    const token = page.accessToken || process.env.PAGE_ACCESS_TOKEN
+    if (!token) continue
+    try {
+      const comments = await listPageComments(page.pageId, token)
+      for (const c of comments) {
+        const r = await processFacebookCommentCore(database, page, { commentId: c.id, fromId: c.from?.id, fromName: c.from?.name, message: c.message, postId: c.postId }, { skipIfExists: true })
+        if (r) summary.facebook++
+      }
+    } catch (e) { await log('META_WEBHOOK', 'WARN', 'Cron FB tarama hatasi', { error: e.message }) }
+  }
+  if (youtubeConfigured() && youtubeChannelId()) {
+    try {
+      const data = await listChannelCommentThreads(youtubeChannelId())
+      for (const item of data.items || []) {
+        const top = item.snippet?.topLevelComment
+        if (!top) continue
+        const exists = await database.collection('leads').findOne({ commentId: top.id })
+        if (exists) continue
+        await processYoutubeComment(database, {
+          commentId: top.id,
+          text: top.snippet?.textOriginal || top.snippet?.textDisplay || '',
+          author: top.snippet?.authorDisplayName,
+          authorChannelId: top.snippet?.authorChannelId?.value,
+          videoId: item.snippet?.videoId,
+        })
+        summary.youtube++
+      }
+    } catch (e) { await log('YOUTUBE', 'WARN', 'Cron YT tarama hatasi', { error: e.message }) }
+  }
+  await log('META_WEBHOOK', 'INFO', 'Otomatik tarama tamamlandi', summary)
+  return summary
+}
+
+// Scheduler'i (varsa) baslat - ilk istekte bir kez
+let schedulerInit = false
+async function ensureScheduler(database) {
+  if (schedulerInit) return
+  schedulerInit = true
+  try {
+    const s = await database.collection('settings').findOne({ id: 'cron' })
+    if (s?.enabled) {
+      startScheduler(process.env.CRON_SCAN_SCHEDULE || '*/15 * * * *', () => scanAll(database))
+    }
+  } catch (e) {}
 }
 
 // ================= TELEGRAM WEBHOOK =================
@@ -281,6 +346,39 @@ async function processTelegramWebhook(database, body) {
       await tgSendMessage('Foto analizi basarisiz: ' + e.message, { chatId: msg.chat.id })
       await log('AI_VISION', 'ERROR', 'Telegram foto analizi hatasi', { error: e.message })
       return { action: 'photo_error' }
+    }
+  }
+
+  // Gelen sesli mesaj -> Whisper ile metne cevir -> icerik fabrikasi
+  if (msg.voice || msg.audio) {
+    try {
+      const fileId = (msg.voice || msg.audio).file_id
+      ensureDirs()
+      const tmp = path.join(os.tmpdir(), `tg_voice_${Date.now()}.oga`)
+      await tgDownloadToFile(fileId, tmp)
+      const transcript = await transcribeAudio(tmp)
+      try { await fsp.unlink(tmp) } catch (e) {}
+      if (!transcript || !transcript.trim()) {
+        await tgSendMessage('Ses metne cevrilemedi.', { chatId: msg.chat.id })
+        return { action: 'voice_empty' }
+      }
+      const page = await database.collection('facebook_pages').findOne({})
+      const content = await generateMultiPlatform(transcript, page)
+      const post = {
+        id: uuidv4(), pageId: page?.id || null, rawInputText: transcript, status: 'DRAFT',
+        ...content, createdAt: new Date(), updatedAt: new Date(),
+      }
+      await database.collection('content_posts').insertOne(post)
+      await tgSendMessage(
+        `🎙️ <b>Sesli mesaj metne cevrildi:</b>\n<i>${transcript.slice(0, 300)}</i>\n\n<b>Facebook:</b>\n${content.fbCaption}`,
+        { chatId: msg.chat.id, reply_markup: { inline_keyboard: [[{ text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` }]] } }
+      )
+      await log('AI_VISION', 'INFO', 'Sesli mesaj icerige donusturuldu')
+      return { action: 'voice_generated', id: post.id }
+    } catch (e) {
+      await tgSendMessage('Sesli mesaj islenemedi: ' + e.message, { chatId: msg.chat.id })
+      await log('TELEGRAM_BOT', 'ERROR', 'Voice islemi hatasi', { error: e.message })
+      return { action: 'voice_error' }
     }
   }
 
@@ -393,13 +491,14 @@ async function processYoutubeComment(database, c) {
 
 // ================= ROUTER =================
 async function handleRoute(request, { params }) {
-  const { path = [] } = await params
-  const route = `/${path.join('/')}`
+  const { path: pathSegments = [] } = await params
+  const route = `/${pathSegments.join('/')}`
   const method = request.method
   const url = new URL(request.url)
 
   try {
     const database = await connectToMongo()
+    ensureScheduler(database)
 
     // ---- health / info ----
     if ((route === '/' || route === '/health') && method === 'GET') {
@@ -484,13 +583,13 @@ async function handleRoute(request, { params }) {
       return json(strip(saved))
     }
     if (route.startsWith('/pages/') && method === 'GET') {
-      const id = path[1]
+      const id = pathSegments[1]
       const p = await database.collection('facebook_pages').findOne({ id })
       if (!p) return json({ error: 'Sayfa bulunamadi' }, 404)
       return json(strip(p))
     }
     if (route.startsWith('/pages/') && method === 'PUT') {
-      const id = path[1]
+      const id = pathSegments[1]
       const b = await request.json()
       const allowed = ['pageName', 'accessToken', 'whatsappNumber', 'phone', 'website', 'about', 'commentTemplate', 'dmTemplate', 'autoReplyActive', 'category']
       const set = { updatedAt: new Date() }
@@ -500,7 +599,7 @@ async function handleRoute(request, { params }) {
       return json(strip(p))
     }
     if (route.startsWith('/pages/') && method === 'DELETE') {
-      const id = path[1]
+      const id = pathSegments[1]
       await database.collection('facebook_pages').deleteOne({ id })
       return json({ ok: true })
     }
@@ -718,7 +817,7 @@ async function handleRoute(request, { params }) {
       return json(strip(lead))
     }
     if (route.startsWith('/leads/') && method === 'PUT') {
-      const id = path[1]
+      const id = pathSegments[1]
       const b = await request.json()
       const set = { updatedAt: new Date() }
       if (b.status) set.status = b.status
@@ -828,7 +927,212 @@ async function handleRoute(request, { params }) {
         ok: true,
         message: 'OAuth token bulundu. Video dosyasi resumable upload ile yuklenmelidir (medya dosyasi bekleniyor).',
         requiresMedia: true,
+      }, 200)
+    }
+
+    // ================= STUDIO (Afis & Reels) =================
+    if (route === '/studio/presets' && method === 'GET') {
+      return json(PRESETS.map((p) => ({ id: p.id, name: p.name, url: `/api/media?dir=music&file=${p.id}.mp3` })))
+    }
+
+    // Arka plan silme (Remove.bg / Photoroom)
+    if (route === '/studio/remove-bg' && method === 'POST') {
+      if (!bgConfigured()) return json({ error: `Arka plan silme icin ${bgProvider() === 'photoroom' ? 'PHOTOROOM_API_KEY' : 'REMOVE_BG_API_KEY'} gerekli` }, 503)
+      const b = await request.json()
+      if (!b.image) return json({ error: 'image (dataUrl) zorunlu' }, 400)
+      const m = String(b.image).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/)
+      const mime = m ? m[1] : 'image/jpeg'
+      const data = m ? m[2] : b.image
+      try {
+        const out = await removeBackground(Buffer.from(data, 'base64'), 'input.png', mime)
+        return json({ image: 'data:image/png;base64,' + out.toString('base64') })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Arka plan silme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Afisi (canvas PNG) kaydet
+    if (route === '/studio/save-poster' && method === 'POST') {
+      const b = await request.json()
+      if (!b.dataUrl) return json({ error: 'dataUrl zorunlu' }, 400)
+      ensureDirs()
+      const data = String(b.dataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+      const id = uuidv4()
+      const file = `poster_${id}.png`
+      await fsp.writeFile(path.join(UPLOAD_DIR, file), Buffer.from(data, 'base64'))
+      return json({ id, file, url: `/api/media?dir=uploads&file=${file}` })
+    }
+
+    // Kullanici muzigi yukle (multipart)
+    if (route === '/studio/upload-audio' && method === 'POST') {
+      ensureDirs()
+      const form = await request.formData()
+      const f = form.get('file')
+      if (!f || typeof f === 'string') return json({ error: 'file zorunlu' }, 400)
+      const ext = (f.name && f.name.includes('.')) ? f.name.split('.').pop().toLowerCase() : 'mp3'
+      const file = `audio_${uuidv4()}.${safeName(ext)}`
+      await fsp.writeFile(path.join(UPLOAD_DIR, file), Buffer.from(await f.arrayBuffer()))
+      return json({ file, url: `/api/media?dir=uploads&file=${file}` })
+    }
+
+    // Reels render (ffmpeg - arka planda)
+    if (route === '/studio/render' && method === 'POST') {
+      const b = await request.json()
+      if (!b.posterDataUrl && !b.posterFile) return json({ error: 'posterDataUrl veya posterFile zorunlu' }, 400)
+      ensureDirs()
+      const id = uuidv4()
+      const posterFile = `poster_${id}.png`
+      const posterAbs = path.join(UPLOAD_DIR, posterFile)
+      if (b.posterDataUrl) {
+        const data = String(b.posterDataUrl).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
+        await fsp.writeFile(posterAbs, Buffer.from(data, 'base64'))
+      } else {
+        await fsp.copyFile(path.join(UPLOAD_DIR, safeName(b.posterFile)), posterAbs)
+      }
+      // audio
+      let audioPath = null
+      const mode = b.audioMode || 'silent'
+      if (mode === 'preset') audioPath = presetPath(b.presetId || 'enerjik')
+      else if (mode === 'upload' && b.audioFile) {
+        const ap = path.join(UPLOAD_DIR, safeName(b.audioFile))
+        if (fs.existsSync(ap)) audioPath = ap
+      }
+      const outFile = `reels_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      const jobDoc = {
+        id, status: 'RENDERING', posterFile, outFile, videoUrl: null, audioMode: mode,
+        title: b.title || '', description: b.description || '', error: null, createdAt: new Date(), updatedAt: new Date(),
+      }
+      await database.collection('renders').insertOne(jobDoc)
+      // arka planda render
+      renderReels({ posterPath: posterAbs, outPath: outAbs, audioPath, duration: 6 })
+        .then(async () => {
+          await database.collection('renders').updateOne({ id }, { $set: { status: 'DONE', videoUrl: `/api/media?dir=uploads&file=${outFile}`, updatedAt: new Date() } })
+          await log('AI_VISION', 'INFO', 'Reels render tamam', { id })
+        })
+        .catch(async (e) => {
+          await database.collection('renders').updateOne({ id }, { $set: { status: 'FAILED', error: e.message, updatedAt: new Date() } })
+          await log('AI_VISION', 'ERROR', 'Reels render hatasi', { id, error: e.message })
+        })
+      return json({ jobId: id, status: 'RENDERING' })
+    }
+
+    if (route.startsWith('/studio/render/') && method === 'GET') {
+      const id = pathSegments[2]
+      const doc = await database.collection('renders').findOne({ id })
+      if (!doc) return json({ error: 'Render bulunamadi' }, 404)
+      return json(strip(doc))
+    }
+
+    // ================= MEDIA STREAM =================
+    if (route === '/media' && method === 'GET') {
+      const dir = url.searchParams.get('dir')
+      const file = safeName(url.searchParams.get('file') || '')
+      const base = dir === 'music' ? MUSIC_DIR : dir === 'uploads' ? UPLOAD_DIR : null
+      if (!base || !file) return json({ error: 'gecersiz istek' }, 400)
+      const abs = path.join(base, file)
+      if (!abs.startsWith(base) || !fs.existsSync(abs)) return json({ error: 'dosya yok' }, 404)
+      const buf = await fsp.readFile(abs)
+      const ext = file.split('.').pop().toLowerCase()
+      const ct = ext === 'mp4' ? 'video/mp4' : ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'application/octet-stream'
+      return new NextResponse(buf, { status: 200, headers: { 'Content-Type': ct, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' } })
+    }
+
+    // ================= GOOGLE OAUTH (YouTube) =================
+    if (route === '/oauth/google/url' && method === 'GET') {
+      if (!googleConfigured()) return json({ error: 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET tanimli degil', redirectUri: redirectUri() }, 503)
+      return json({ url: authorizeUrl('cockpit'), redirectUri: redirectUri() })
+    }
+    if (route === '/oauth/google/callback' && method === 'GET') {
+      const code = url.searchParams.get('code')
+      const base = process.env.NEXT_PUBLIC_BASE_URL || ''
+      if (!code) return NextResponse.redirect(`${base}/?youtube=error`)
+      try {
+        const tok = await exchangeCode(code)
+        const set = { id: 'youtube', accessToken: tok.access_token, expiresAt: new Date(Date.now() + (tok.expires_in || 3600) * 1000), updatedAt: new Date() }
+        const update = { $set: set }
+        if (tok.refresh_token) update.$set.refreshToken = tok.refresh_token
+        await database.collection('oauth_tokens').updateOne({ id: 'youtube' }, update, { upsert: true })
+        await log('YOUTUBE', 'INFO', 'Google OAuth baglandi')
+        return NextResponse.redirect(`${base}/?youtube=connected`)
+      } catch (e) {
+        await log('YOUTUBE', 'ERROR', 'OAuth callback hatasi', { error: e.message })
+        return NextResponse.redirect(`${base}/?youtube=error`)
+      }
+    }
+    if (route === '/oauth/google/status' && method === 'GET') {
+      const doc = await database.collection('oauth_tokens').findOne({ id: 'youtube' })
+      return json({ connected: !!doc?.refreshToken, configured: googleConfigured(), redirectUri: redirectUri() })
+    }
+
+    // ================= PUBLISH: YouTube Short (OAuth) =================
+    if (route === '/youtube/upload-short' && method === 'POST') {
+      const b = await request.json()
+      const render = b.jobId ? await database.collection('renders').findOne({ id: b.jobId }) : null
+      const fileName = render?.outFile || b.file
+      if (!fileName) return json({ error: 'jobId veya file zorunlu' }, 400)
+      const abs = path.join(UPLOAD_DIR, safeName(fileName))
+      if (!fs.existsSync(abs)) return json({ error: 'Video dosyasi bulunamadi' }, 404)
+      let token = youtubeOAuthToken()
+      if (!token) { try { token = await getValidAccessToken(database) } catch (e) {} }
+      if (!token) return json({ error: 'OAUTH_REQUIRED', message: 'Once Ayarlar > YouTube Kanal Bagla ile OAuth baglantisi kurun.' }, 501)
+      try {
+        const res = await uploadShort(token, abs, b.title || render?.title || 'Reels', b.description || render?.description || '')
+        await log('YOUTUBE', 'INFO', 'Shorts yuklendi', { videoId: res.id })
+        return json({ ok: true, videoId: res.id, url: `https://youtube.com/shorts/${res.id}` })
+      } catch (e) {
+        await log('YOUTUBE', 'ERROR', 'Shorts yukleme hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // ================= PUBLISH: Facebook Reel =================
+    if (route === '/reels/publish-fb' && method === 'POST') {
+      const b = await request.json()
+      const render = b.jobId ? await database.collection('renders').findOne({ id: b.jobId }) : null
+      const fileName = render?.outFile || b.file
+      if (!fileName) return json({ error: 'jobId veya file zorunlu' }, 400)
+      const abs = path.join(UPLOAD_DIR, safeName(fileName))
+      if (!fs.existsSync(abs)) return json({ error: 'Video dosyasi bulunamadi' }, 404)
+      const pageDoc = b.pageId ? await database.collection('facebook_pages').findOne({ id: b.pageId }) : await database.collection('facebook_pages').findOne({})
+      const pid = pageDoc?.pageId || process.env.PAGE_ID
+      const tok = pageDoc?.accessToken || process.env.PAGE_ACCESS_TOKEN
+      if (!pid || !tok) return json({ error: 'PAGE_ID / PAGE_ACCESS_TOKEN tanimli degil (Facebook sayfasi ekleyin)' }, 501)
+      try {
+        const res = await publishFacebookReel(abs, b.description || render?.description || '', pid, tok)
+        await log('META_WEBHOOK', 'INFO', 'Facebook Reel yayinlandi', { videoId: res.video_id })
+        return json({ ok: true, ...res })
+      } catch (e) {
+        await log('META_WEBHOOK', 'ERROR', 'Facebook Reel hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // ================= CRON =================
+    if (route === '/cron/status' && method === 'GET') {
+      const s = await database.collection('settings').findOne({ id: 'cron' })
+      const state = getSchedulerState()
+      return json({ 
+        enabled: !!s?.enabled, 
+        schedule: process.env.CRON_SCAN_SCHEDULE || '*/15 * * * *', 
+        running: state.running,
+        lastRun: state.lastRun,
+        lastResult: state.lastResult
       })
+    }
+    if (route === '/cron/toggle' && method === 'POST') {
+      const b = await request.json()
+      const enabled = !!b.enabled
+      await database.collection('settings').updateOne({ id: 'cron' }, { $set: { id: 'cron', enabled, updatedAt: new Date() } }, { upsert: true })
+      if (enabled) startScheduler(process.env.CRON_SCAN_SCHEDULE || '*/15 * * * *', () => scanAll(database))
+      else stopScheduler()
+      return json({ ok: true, enabled, ...getSchedulerState() })
+    }
+    if (route === '/cron/run' && method === 'POST') {
+      const r = await scanAll(database)
+      setLast(r)
+      return json({ ok: true, result: r })
     }
 
     // ---- Test simulator: fake a Meta comment to run the engine end-to-end ----

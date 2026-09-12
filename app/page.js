@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
+import ReelsStudio from '@/components/studio/ReelsStudio'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from '@/components/ui/dialog'
@@ -132,6 +133,12 @@ export default function App() {
   }, [])
 
   useEffect(() => { refreshAll() }, [refreshAll])
+
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search)
+    if (p.get('youtube') === 'connected') { toast.success('YouTube kanaliniz baglandi!'); setTab('settings'); window.history.replaceState({}, '', '/') }
+    else if (p.get('youtube') === 'error') { toast.error('YouTube baglantisi basarisiz oldu'); window.history.replaceState({}, '', '/') }
+  }, [])
 
   const loadLeads = async () => { try { setLeads(await api('/leads')) } catch (e) { toast.error(e.message) } }
   const loadContent = async () => { try { setContent(await api('/content')) } catch (e) { toast.error(e.message) } }
@@ -487,6 +494,23 @@ function AddPageDialog({ onDone, trigger }) {
 
 // ==================== CONTENT ====================
 function ContentModule({ pageId, config, loadContent }) {
+  const [sub, setSub] = useState('text')
+  return (
+    <div className="space-y-6">
+      <div className="flex gap-2">
+        <button onClick={() => setSub('text')} className={`rounded-lg border px-4 py-2 text-sm transition ${sub === 'text' ? 'border-indigo-500 bg-indigo-500/15 text-indigo-300' : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}>
+          <Sparkles className="mr-1.5 inline h-4 w-4" /> Metin Uretici
+        </button>
+        <button onClick={() => setSub('studio')} className={`rounded-lg border px-4 py-2 text-sm transition ${sub === 'studio' ? 'border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-300' : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'}`}>
+          <Wand2 className="mr-1.5 inline h-4 w-4" /> Afis & Reels Studyosu
+        </button>
+      </div>
+      {sub === 'text' ? <TextGenerator pageId={pageId} loadContent={loadContent} /> : <ReelsStudio pageId={pageId} integrations={config.integrations || {}} />}
+    </div>
+  )
+}
+
+function TextGenerator({ pageId, loadContent }) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
@@ -644,14 +668,34 @@ function SettingsModule({ page, config, reload }) {
   const [f, setF] = useState(null)
   const [busy, setBusy] = useState(false)
   const [yt, setYt] = useState({ channelId: config.integrations?.youtubeChannelId || '' })
+  const [oauth, setOauth] = useState({ connected: false, configured: false })
+  const [cron, setCron] = useState({ enabled: false, schedule: '', running: false, lastRun: null })
   useEffect(() => { if (page) setF({ commentTemplate: page.commentTemplate || '', dmTemplate: page.dmTemplate || '', whatsappNumber: page.whatsappNumber || '', autoReplyActive: page.autoReplyActive !== false }) }, [page])
   useEffect(() => { setYt({ channelId: config.integrations?.youtubeChannelId || '' }) }, [config])
+  useEffect(() => {
+    api('/oauth/google/status').then(setOauth).catch(() => {})
+    api('/cron/status').then(setCron).catch(() => {})
+  }, [])
 
   const save = async () => {
     if (!page) return
     setBusy(true)
     try { await api(`/pages/${page.id}`, { method: 'PUT', body: JSON.stringify(f) }); toast.success('Ayarlar kaydedildi'); reload() }
     catch (e) { toast.error(e.message) } finally { setBusy(false) }
+  }
+
+  const connectYoutube = async () => {
+    try { const r = await api('/oauth/google/url'); window.location.href = r.url }
+    catch (e) { toast.error(e.message + ' — GOOGLE_CLIENT_ID/SECRET .env icine girin') }
+  }
+
+  const toggleCron = async (enabled) => {
+    try { const r = await api('/cron/toggle', { method: 'POST', body: JSON.stringify({ enabled }) }); setCron((c) => ({ ...c, ...r })); toast.success(enabled ? 'Otomatik tarama acildi' : 'Otomatik tarama kapatildi') }
+    catch (e) { toast.error(e.message) }
+  }
+  const runNow = async () => {
+    try { const r = await api('/cron/run', { method: 'POST' }); toast.success(`Tarama tamam: FB ${r.result?.facebook || 0}, YT ${r.result?.youtube || 0}`) }
+    catch (e) { toast.error(e.message) }
   }
 
   return (
@@ -693,6 +737,33 @@ function SettingsModule({ page, config, reload }) {
           <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-3 text-xs text-amber-300/80">
             <b>Not:</b> API anahtarlari guvenlik nedeniyle sunucu tarafinda <code className="text-amber-200">/app/.env</code> dosyasinda tutulur.
             <code className="text-amber-200"> YOUTUBE_API_KEY</code>, <code className="text-amber-200">YOUTUBE_CHANNEL_ID</code> ve OAuth token'i buraya girip servisi yeniden baslattiginizda YouTube modulu tam otomatik calisir.
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 p-4">
+            <div><p className="text-sm font-medium">Kanal Bagla (OAuth2)</p><p className="text-xs text-zinc-500">Shorts yukleme + yorum yaniti icin kendi kanalinizi baglayin</p></div>
+            {oauth.connected
+              ? <Badge className="bg-emerald-500/15 text-emerald-300">Bagli ✓</Badge>
+              : <Button size="sm" onClick={connectYoutube} className="bg-red-600 hover:bg-red-500"><Youtube className="mr-1.5 h-4 w-4" /> Kanal Bagla</Button>}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Background removal + Cron */}
+      <Card className="border-zinc-800 bg-zinc-900/70">
+        <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Settings2 className="h-4 w-4 text-cyan-400" /> Studio & Otomasyon Ayarlari</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 p-4">
+            <div><p className="text-sm font-medium">Arka Plan Silme ({config.integrations?.bgProvider || 'removebg'})</p><p className="text-xs text-zinc-500">Studio icin REMOVE_BG_API_KEY / PHOTOROOM_API_KEY</p></div>
+            <IntPill ok={config.integrations?.bgRemoval} label={config.integrations?.bgRemoval ? 'Bagli' : 'Bekliyor'} />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 p-4">
+            <div>
+              <p className="text-sm font-medium">Otomatik Yorum Tarama (Cron)</p>
+              <p className="text-xs text-zinc-500">Program: <code className="text-cyan-300">{cron.schedule || '*/15 * * * *'}</code>{cron.lastRun ? ` · Son: ${new Date(cron.lastRun).toLocaleTimeString('tr-TR')}` : ''}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <Button size="sm" variant="outline" onClick={runNow} className="border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800">Simdi Tara</Button>
+              <Switch checked={cron.enabled} onCheckedChange={toggleCron} />
+            </div>
           </div>
         </CardContent>
       </Card>
