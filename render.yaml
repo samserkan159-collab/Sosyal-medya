@@ -3,11 +3,10 @@
 services:
   - type: web
     name: asm-cockpit
-    runtime: node
+    runtime: docker
     plan: starter
     region: frankfurt
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /login
     envVars:
       - key: NODE_VERSION
