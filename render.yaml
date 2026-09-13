@@ -1,0 +1,36 @@
+# ASM Cockpit — yeni Render servis (ASM Python kutusuyla karisma)
+# Mongo: ayni Atlas cluster, ayri DB (sosyal_medya)
+services:
+  - type: web
+    name: asm-cockpit
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: DB_NAME
+        value: sosyal_medya
+      - key: MONGO_URL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: NEXT_PUBLIC_BASE_URL
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_VERIFY_TOKEN
+        sync: false
+      - key: PAGE_ACCESS_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
+        value: "*"
