@@ -79,7 +79,7 @@ export default function VideoTranslator() {
   const ping = useCallback(async () => {
     try {
       const r = await dubFetch('/health')
-      setOnline(r.api !== false)
+      setOnline(!!r.ok)
       const [langs, tgts] = await Promise.all([
         dubFetch('/languages').catch(() => null),
         dubFetch('/target-languages').catch(() => null),
@@ -135,7 +135,7 @@ export default function VideoTranslator() {
 
   const handleFile = async (file) => {
     if (!file) return
-    if (!online) { toast.error('Ceviri motoru kapali — once ASM backend (8000) acin'); return }
+    if (!online) { toast.error('Ceviri motoru kapali — GEMINI_API_KEY Render envde olmali'); return }
     const ok = ['.mp4', '.mov', '.m4v', '.webm', '.mkv'].some((e) => file.name.toLowerCase().endsWith(e))
     if (!ok) { toast.error('MP4, MOV, M4V, WEBM veya MKV yukleyin'); return }
     setUploading(true)
@@ -220,7 +220,7 @@ export default function VideoTranslator() {
   return (
     <div className="space-y-4">
       <div className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${online ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300' : 'border-amber-500/30 bg-amber-950/20 text-amber-300'}`}>
-        <span>{online === null ? 'Motor kontrol ediliyor...' : online ? 'ASM ceviri motoru bagli (Gemini + Edge-TTS / ses API)' : 'Motor kapali — dublaj-ceviri-main icinde BASLAT_ASM.bat ile 8000 acin'}</span>
+        <span>{online === null ? 'Motor kontrol ediliyor...' : online ? 'Canli Gemini dublaj — is bitince en fazla 2 video tutulur, Mongo sismez' : 'Motor kapali — GEMINI_API_KEY yok'}</span>
         <button type="button" onClick={ping} className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200"><RefreshCw className="h-3 w-3" /> Yenile</button>
       </div>
 
@@ -230,7 +230,7 @@ export default function VideoTranslator() {
             <CardTitle className="flex items-center gap-2 text-sm"><Languages className="h-4 w-4 text-sky-400" /> Video Cevirici</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 px-3 pb-3">
-            <p className="text-xs text-zinc-500">Ana dili sec, hedefe dublajla. Motor: transcribe + ceviri (Gemini) ve seslendirme API.</p>
+            <p className="text-xs text-zinc-500">Ana dili sec, hedefe dublajla. Motor: Gemini (yazi + ses). Indir, sonra eski dosyalar silinir (en fazla 2 tampon).</p>
             <div>
               <p className="mb-1.5 text-[11px] uppercase tracking-wider text-zinc-500">Ana dil</p>
               <ChipRow items={languages} value={srcLang} onChange={setSrcLang} disabled={uploading || job?.status === 'running'} />

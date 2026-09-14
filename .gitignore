@@ -32,6 +32,7 @@ dist
 
 # Local media (Render'da DATA_DIR diskine yazilir)
 /uploads
+/dublaj
 
 # Environment files (comprehensive coverage)
 *token.json*

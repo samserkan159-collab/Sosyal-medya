@@ -106,15 +106,13 @@ export default function KlingStudio() {
 
   const est = cfg.estimated_costs?.[`${mode}_${duration}s`]
   const ready = cfg.configured === true
-  const motorDown = cfg.motor === false
 
   return (
     <div className="space-y-4">
       <div className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${ready ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300' : 'border-amber-500/30 bg-amber-950/20 text-amber-300'}`}>
         <span>
           {cfg.configured == null && 'Kling kontrol ediliyor...'}
-          {motorDown && 'Ceviri motoru (8000) kapali — BASLAT_ASM.bat ile acin, Kling oradan gider.'}
-          {!motorDown && cfg.configured === false && 'Kling anahtarlari yok — dublaj-ceviri backend/keys.env icine KLING_ACCESS_KEY / KLING_SECRET_KEY.'}
+          {cfg.configured === false && 'Kling canli panoda henuz yok — Video Cevirici Gemini ile calisir.'}
           {ready && 'Kling API bagli — fotograf + tarif ile image-to-video.'}
         </span>
         <button type="button" onClick={loadCfg} className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200"><RefreshCw className="h-3 w-3" /> Yenile</button>

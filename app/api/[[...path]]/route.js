@@ -44,6 +44,7 @@ import { videoAiConfigured, modelCatalog, estimateUsd, buildScenePrompt, syncSce
 import { verifyMetaSignature } from '@/lib/auth'
 import { getSchedulerState, startScheduler, stopScheduler, setLast, startScheduleWorker } from '@/lib/scheduler'
 import { UPLOAD_DIR, MUSIC_DIR, ensureDirs, safeName } from '@/lib/paths'
+import { pruneOldVideos } from '@/lib/video-gc'
 import fs from 'fs'
 import fsp from 'fs/promises'
 import path from 'path'
@@ -56,16 +57,23 @@ export const dynamic = 'force-dynamic'
 let client
 let db
 let connectPromise
+let lastVideoPrune = 0
 async function connectToMongo() {
-  if (db) return db
-  if (!connectPromise) {
-    client = new MongoClient(process.env.MONGO_URL)
-    connectPromise = client.connect().then(() => {
-      db = client.db(process.env.DB_NAME)
-      return db
-    })
+  if (!db) {
+    if (!connectPromise) {
+      client = new MongoClient(process.env.MONGO_URL)
+      connectPromise = client.connect().then(() => {
+        db = client.db(process.env.DB_NAME)
+        return db
+      })
+    }
+    await connectPromise
   }
-  await connectPromise
+  const now = Date.now()
+  if (now - lastVideoPrune > 20_000) {
+    lastVideoPrune = now
+    pruneOldVideos(db).catch(() => {})
+  }
   return db
 }
 
