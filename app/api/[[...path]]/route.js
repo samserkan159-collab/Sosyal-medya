@@ -222,7 +222,8 @@ async function processFacebookCommentCore(database, page, c, opts = {}) {
   if (isPrice) {
     try {
       const text =
-        `🚨 <b>YENI MUSTERI YAKALANDI!</b>\n\n` +
+        `🚨 <b>YORUM CEVAP — MUSTERI YAKALANDI</b>\n` +
+        `📌 Kaynak: Facebook video / gonderi alti yorum\n\n` +
         `👤 Kullanici: <b>${lead.userName}</b>\n` +
         `💬 Yorum: <i>${c.message}</i>\n` +
         `🎯 Islem: ${lead.replySent ? 'Yoruma yanit ✅' : 'Yanit ✖️'} | ${lead.dmSent ? 'Messenger DM ✅' : 'DM ✖️'}\n` +
@@ -537,7 +538,8 @@ async function processYoutubeComment(database, c) {
     // Telegram alarmi
     try {
       const text =
-        `🎬 <b>YOUTUBE MUSTERI YAKALANDI!</b>\n\n` +
+        `🎬 <b>YOUTUBE YORUM — MUSTERI YAKALANDI</b>\n` +
+        `📌 Kaynak: YouTube video alti yorum\n\n` +
         `👤 Kullanici: <b>${lead.userName}</b>\n` +
         `💬 Yorum: <i>${c.text}</i>\n` +
         `🎯 Islem: ${lead.replySent ? 'Otomatik yanit gonderildi ✅' : 'Yanit icin OAuth gerekli ⚠️'}\n` +
