@@ -18,7 +18,10 @@ import {
   tgSendMessage,
   tgAnswerCallback,
   tgDownloadBase64,
+  tgDownloadToFile,
   telegramConfigured,
+  telegramFbConfigured,
+  telegramYtConfigured,
   defaultChat,
 } from '@/lib/telegram'
 import {
@@ -139,6 +142,8 @@ function integrationsStatus() {
     ai: aiConfigured(),
     meta: !!process.env.PAGE_ACCESS_TOKEN && !!process.env.PAGE_ID,
     telegram: telegramConfigured(),
+    telegramFb: telegramFbConfigured(),
+    telegramYt: telegramYtConfigured(),
     youtube: youtubeConfigured(),
     youtubeReply: !!youtubeOAuthToken(),
     youtubeChannelId: youtubeChannelId(),
@@ -223,6 +228,7 @@ async function processFacebookCommentCore(database, page, c, opts = {}) {
         `🎯 Islem: ${lead.replySent ? 'Yoruma yanit ✅' : 'Yanit ✖️'} | ${lead.dmSent ? 'Messenger DM ✅' : 'DM ✖️'}\n` +
         `📊 Etiket: PRICE_INQUIRY`
       await tgSendMessage(text, {
+        bot: 'fb',
         reply_markup: whatsapp ? { inline_keyboard: [[{ text: '💚 WhatsApp ile Yaz', url: `https://wa.me/${whatsapp}` }]] } : undefined,
       })
     } catch (e) { await log('TELEGRAM_BOT', 'WARN', 'Telegram alarmi gonderilemedi', { error: e.message }) }
@@ -359,7 +365,7 @@ async function processDueSchedules(database) {
 }
 
 // ================= TELEGRAM WEBHOOK =================
-async function processTelegramWebhook(database, body) {
+async function processTelegramWebhook(database, body, bot = 'fb') {
   // Inline buton tiklamalari
   if (body.callback_query) {
     const cq = body.callback_query
@@ -370,8 +376,8 @@ async function processTelegramWebhook(database, body) {
         { id },
         { $set: { status: 'PUBLISHED', approvedAt: new Date(), publishedAt: new Date(), updatedAt: new Date() } }
       )
-      await tgAnswerCallback(cq.id, 'Icerik onaylandi ve yayina alindi ✅')
-      await tgSendMessage(`✅ <b>Icerik onaylandi ve yayina alindi.</b>\nID: <code>${id}</code>`)
+      await tgAnswerCallback(cq.id, 'Icerik onaylandi ve yayina alindi ✅', bot)
+      await tgSendMessage(`✅ <b>Icerik onaylandi ve yayina alindi.</b>\nID: <code>${id}</code>`, { bot })
       await log('TELEGRAM_BOT', 'INFO', 'Icerik onaylandi', { id })
       return { action: 'approved', id }
     }
@@ -381,11 +387,11 @@ async function processTelegramWebhook(database, body) {
         { id },
         { $set: { status: 'DRAFT', updatedAt: new Date() } }
       )
-      await tgAnswerCallback(cq.id, 'Icerik reddedildi')
+      await tgAnswerCallback(cq.id, 'Icerik reddedildi', bot)
       await log('TELEGRAM_BOT', 'INFO', 'Icerik reddedildi', { id })
       return { action: 'rejected', id }
     }
-    await tgAnswerCallback(cq.id, 'Bilinmeyen komut')
+    await tgAnswerCallback(cq.id, 'Bilinmeyen komut', bot)
     return { action: 'unknown_callback' }
   }
 
@@ -396,18 +402,18 @@ async function processTelegramWebhook(database, body) {
   if (msg.photo && msg.photo.length) {
     try {
       const largest = msg.photo[msg.photo.length - 1]
-      const base64 = await tgDownloadBase64(largest.file_id)
+      const base64 = await tgDownloadBase64(largest.file_id, bot)
       const analysis = await analyzeAuditScreenshot(base64)
       const text =
         `🔍 <b>Ekran Goruntusu Analizi</b>\n\n` +
         `📊 Skor: <b>${analysis.score || 0}/100</b>\n` +
         (analysis.issues?.length ? `\n<b>Sorunlar:</b>\n• ${analysis.issues.join('\n• ')}` : '') +
         (analysis.recommendations?.length ? `\n\n<b>Oneriler:</b>\n• ${analysis.recommendations.join('\n• ')}` : '')
-      await tgSendMessage(text, { chatId: msg.chat.id })
+      await tgSendMessage(text, { chatId: msg.chat.id, bot })
       await log('AI_VISION', 'INFO', 'Telegram foto analizi yapildi')
       return { action: 'photo_analyzed', score: analysis.score }
     } catch (e) {
-      await tgSendMessage('Foto analizi basarisiz: ' + e.message, { chatId: msg.chat.id })
+      await tgSendMessage('Foto analizi basarisiz: ' + e.message, { chatId: msg.chat.id, bot })
       await log('AI_VISION', 'ERROR', 'Telegram foto analizi hatasi', { error: e.message })
       return { action: 'photo_error' }
     }
@@ -419,11 +425,11 @@ async function processTelegramWebhook(database, body) {
       const fileId = (msg.voice || msg.audio).file_id
       ensureDirs()
       const tmp = path.join(os.tmpdir(), `tg_voice_${Date.now()}.oga`)
-      await tgDownloadToFile(fileId, tmp)
+      await tgDownloadToFile(fileId, tmp, bot)
       const transcript = await transcribeAudio(tmp)
       try { await fsp.unlink(tmp) } catch (e) {}
       if (!transcript || !transcript.trim()) {
-        await tgSendMessage('Ses metne cevrilemedi.', { chatId: msg.chat.id })
+        await tgSendMessage('Ses metne cevrilemedi.', { chatId: msg.chat.id, bot })
         return { action: 'voice_empty' }
       }
       const page = await database.collection('facebook_pages').findOne({})
@@ -435,12 +441,12 @@ async function processTelegramWebhook(database, body) {
       await database.collection('content_posts').insertOne(post)
       await tgSendMessage(
         `🎙️ <b>Sesli mesaj metne cevrildi:</b>\n<i>${transcript.slice(0, 300)}</i>\n\n<b>Facebook:</b>\n${content.fbCaption}`,
-        { chatId: msg.chat.id, reply_markup: { inline_keyboard: [[{ text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` }]] } }
+        { chatId: msg.chat.id, bot, reply_markup: { inline_keyboard: [[{ text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` }]] } }
       )
       await log('AI_VISION', 'INFO', 'Sesli mesaj icerige donusturuldu')
       return { action: 'voice_generated', id: post.id }
     } catch (e) {
-      await tgSendMessage('Sesli mesaj islenemedi: ' + e.message, { chatId: msg.chat.id })
+      await tgSendMessage('Sesli mesaj islenemedi: ' + e.message, { chatId: msg.chat.id, bot })
       await log('TELEGRAM_BOT', 'ERROR', 'Voice islemi hatasi', { error: e.message })
       return { action: 'voice_error' }
     }
@@ -465,19 +471,20 @@ async function processTelegramWebhook(database, body) {
         `✍️ <b>Icerik uretildi!</b>\n\n<b>Facebook:</b>\n${content.fbCaption}\n\nOnaylamak icin panele gelin veya butona basin.`,
         {
           chatId: msg.chat.id,
+          bot,
           reply_markup: { inline_keyboard: [[{ text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` }]] },
         }
       )
       return { action: 'text_generated', id: post.id }
     } catch (e) {
-      await tgSendMessage('Icerik uretilemedi: ' + e.message, { chatId: msg.chat.id })
+      await tgSendMessage('Icerik uretilemedi: ' + e.message, { chatId: msg.chat.id, bot })
       return { action: 'text_error' }
     }
   }
 
   if (msg.text === '/start') {
     try {
-      await tgSendMessage('👋 Command Cockpit botuna hos geldiniz! Ekran goruntusu gonderin (denetim) veya metin gonderin (icerik uretimi).', { chatId: msg.chat.id })
+      await tgSendMessage('👋 Command Cockpit botuna hos geldiniz! Ekran goruntusu gonderin (denetim) veya metin gonderin (icerik uretimi).', { chatId: msg.chat.id, bot })
       return { action: 'start' }
     } catch (e) {
       return { action: 'start_error', error: e.message }
@@ -535,7 +542,7 @@ async function processYoutubeComment(database, c) {
         `💬 Yorum: <i>${c.text}</i>\n` +
         `🎯 Islem: ${lead.replySent ? 'Otomatik yanit gonderildi ✅' : 'Yanit icin OAuth gerekli ⚠️'}\n` +
         `📊 Etiket: PRICE_INQUIRY`
-      await tgSendMessage(text)
+      await tgSendMessage(text, { bot: 'yt' })
     } catch (e) {
       await log('TELEGRAM_BOT', 'WARN', 'YouTube Telegram alarmi gonderilemedi', { error: e.message })
     }
@@ -827,6 +834,7 @@ async function handleRoute(request, { params }) {
           `<b>YouTube:</b> ${post.ytTitle}\n` +
           (post.hashtags?.length ? `\n${post.hashtags.join(' ')}` : '')
         const sent = await tgSendMessage(text, {
+          bot: 'fb',
           reply_markup: {
             inline_keyboard: [[
               { text: '✅ Onayla & Yayinla', callback_data: `approve_post_${post.id}` },
@@ -900,6 +908,8 @@ async function handleRoute(request, { params }) {
     // ---- WEBHOOKS: META (oturum muaf — verify token + imza) ----
     const metaHook = route === '/webhooks/meta' || route === '/webhook/meta'
     const tgHook = route === '/webhooks/telegram' || route === '/webhook/telegram'
+      || route === '/webhooks/telegram/fb' || route === '/webhooks/telegram/yt'
+      || route === '/webhook/telegram/fb' || route === '/webhook/telegram/yt'
     if (metaHook && method === 'GET') {
       const mode = url.searchParams.get('hub.mode')
       const verifyToken = url.searchParams.get('hub.verify_token')
@@ -932,7 +942,8 @@ async function handleRoute(request, { params }) {
         if (got !== secret) return json({ error: 'telegram token hatali' }, 403)
       }
       const body = await request.json()
-      const result = await processTelegramWebhook(database, body)
+      const tgBot = route.endsWith('/yt') ? 'yt' : 'fb'
+      const result = await processTelegramWebhook(database, body, tgBot)
       return json({ ok: true, result })
     }
 

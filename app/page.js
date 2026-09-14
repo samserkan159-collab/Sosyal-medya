@@ -114,7 +114,8 @@ function SidebarInner({ tab, setTab, config, onNav }) {
         <div className="flex flex-col gap-1.5">
           <IntPill ok={config.integrations?.ai} label="AI Motoru (Gemini)" />
           <IntPill ok={config.integrations?.meta} label="Meta Graph API" />
-          <IntPill ok={config.integrations?.telegram} label="Telegram Bot" />
+          <IntPill ok={config.integrations?.telegramFb} label="Telegram FB" />
+          <IntPill ok={config.integrations?.telegramYt} label="Telegram YT" />
           <IntPill ok={config.integrations?.youtube} label="YouTube Data API" />
         </div>
       </div>
