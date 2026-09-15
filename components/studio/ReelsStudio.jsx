@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   ImageUp, Scissors, Type, MoveUpRight, Square, Circle as CircleIcon, Star, RectangleHorizontal,
   Music, Video, Youtube, Facebook, Instagram, Loader2, Trash2, ArrowUp, ArrowDown, CalendarClock, Bold,
-  Sparkles, Layers, Plus, Film, ImagePlus,
+  Sparkles, Layers, Plus, Film, ImagePlus, Download,
 } from 'lucide-react'
 import { STUDIO_BACKGROUNDS } from '@/lib/studio-backgrounds'
 
@@ -352,6 +352,31 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
     } catch (e) { stop(); toast.error(e.message) }
   }
 
+  const triggerDownload = (dataUrl, filename) => {
+    const a = document.createElement('a')
+    a.href = dataUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
+  const downloadPoster = (format = 'png') => {
+    const canvas = c(); if (!canvas || !ready) { toast.error('Editor henuz hazir degil'); return }
+    canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
+    const jpeg = format === 'jpeg' || format === 'jpg'
+    const dataUrl = canvas.toDataURL({ format: jpeg ? 'jpeg' : 'png', quality: 0.92, multiplier: MULT })
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    triggerDownload(dataUrl, `afis_${stamp}.${jpeg ? 'jpg' : 'png'}`)
+    toast.success('Afis indirildi (1080x1920) — video gerekmez')
+  }
+
+  const downloadScene = (i) => {
+    const s = scenes[i]; if (!s?.dataUrl) return
+    triggerDownload(s.dataUrl, `afis_sahne_${i + 1}.png`)
+    toast.success(`Sahne ${i + 1} indirildi`)
+  }
+
   const captureScene = () => {
     const canvas = c(); if (!canvas) return
     canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
@@ -456,6 +481,9 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
               </button>
               <button disabled={aiBusy} onClick={aiSuggest} className="inline-flex items-center gap-1.5 rounded-lg border border-fuchsia-700/60 bg-fuchsia-950/40 px-3 py-1.5 text-xs text-fuchsia-200 hover:border-fuchsia-500/50 disabled:opacity-50">
                 {aiBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} AI Metin Onerisi
+              </button>
+              <button type="button" onClick={() => downloadPoster('png')} disabled={!ready} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-700/50 bg-emerald-950/40 px-3 py-1.5 text-xs text-emerald-200 hover:border-emerald-500/50 disabled:opacity-50">
+                <Download className="h-3.5 w-3.5" /> Afisi Indir
               </button>
               <span className="w-px self-stretch bg-zinc-800" />
               {shapeTools.map((t) => { const Icon = t.icon; return (
@@ -563,12 +591,14 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
             <p className="text-xs text-zinc-500">Tuvaldeki tasarimi "Sahne Ekle" ile kaydedin, sonra tuvali degistirip yeni sahneler ekleyin. 2+ sahne varsa video secilen gecisle birlestirilir. Sahne eklemezseniz tek afis 6sn render edilir — secim sizde.</p>
             <Button onClick={captureScene} disabled={!ready} variant="outline" className="w-full border-cyan-700/50 bg-cyan-950/20 text-cyan-200 hover:bg-cyan-900/30"><Plus className="mr-2 h-4 w-4" /> Bu Tuvali Sahne Olarak Ekle</Button>
             <Button onClick={saveIntroPoster} disabled={!ready || introSaving} variant="outline" className="w-full border-orange-700/50 bg-orange-950/20 text-orange-200 hover:bg-orange-900/30">{introSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Film className="mr-2 h-4 w-4" />} Afisi Video Girisi Icin Kaydet</Button>
+            <Button onClick={() => downloadPoster('png')} disabled={!ready} variant="outline" className="w-full border-emerald-700/50 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-900/30"><Download className="mr-2 h-4 w-4" /> Bu Afisi PNG Indir</Button>
             {scenes.length > 0 && (
               <>
                 <div className="flex flex-wrap gap-2">
                   {scenes.map((s, i) => (
                     <div key={i} className="relative">
                       <img src={s.thumb} alt={`sahne ${i + 1}`} className="h-24 w-[54px] rounded border border-zinc-700 object-cover" />
+                      <button type="button" onClick={() => downloadScene(i)} title="Sahneyi indir" className="absolute -left-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white"><Download className="h-3 w-3" /></button>
                       <button onClick={() => removeScene(i)} className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-white"><Trash2 className="h-3 w-3" /></button>
                       <input type="number" min="1" max="10" value={s.duration} onChange={(e) => setSceneDur(i, Number(e.target.value))} className="mt-1 w-[54px] rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-center text-[10px] text-zinc-300" />
                       <span className="block text-center text-[9px] text-zinc-600">sn</span>
@@ -625,6 +655,15 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
               <input type="radio" checked={audioMode === 'silent'} onChange={() => setAudioMode('silent')} />
               <div><p className="text-sm font-medium">Muziksiz (Sessiz)</p><p className="text-xs text-zinc-500">Trend muzigi platformdan ekleyin</p></div>
             </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-zinc-800 bg-zinc-900/70">
+          <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Download className="h-4 w-4 text-emerald-400" /> Afis Indir</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-zinc-500">Sadece gorsel lazimsa Reels uretmenize gerek yok. Tuval 1080x1920 olarak iner — hikaye, WhatsApp, baski.</p>
+            <Button onClick={() => downloadPoster('png')} disabled={!ready} className="w-full bg-emerald-600 hover:bg-emerald-500"><Download className="mr-2 h-4 w-4" /> PNG Indir (kaliteli)</Button>
+            <Button onClick={() => downloadPoster('jpeg')} disabled={!ready} variant="outline" className="w-full border-zinc-700 text-zinc-200 hover:bg-zinc-800"><Download className="mr-2 h-4 w-4" /> JPG Indir (daha kucuk)</Button>
           </CardContent>
         </Card>
 
