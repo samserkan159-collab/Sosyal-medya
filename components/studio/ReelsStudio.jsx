@@ -8,8 +8,9 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   ImageUp, Scissors, Type, MoveUpRight, Square, Circle as CircleIcon, Star, RectangleHorizontal,
   Music, Video, Youtube, Facebook, Instagram, Loader2, Trash2, ArrowUp, ArrowDown, CalendarClock, Bold,
-  Sparkles, Layers, Plus, Film,
+  Sparkles, Layers, Plus, Film, ImagePlus,
 } from 'lucide-react'
+import { STUDIO_BACKGROUNDS } from '@/lib/studio-backgrounds'
 
 const api = async (path, opts) => {
   const res = await fetch('/api' + path, { headers: { 'Content-Type': 'application/json' }, ...opts })
@@ -60,6 +61,11 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const [aiContext, setAiContext] = useState('')
   const [customTexts, setCustomTexts] = useState('')
   const [customBusy, setCustomBusy] = useState(false)
+  const [bgPanel, setBgPanel] = useState('hazir')
+  const [activeBg, setActiveBg] = useState('')
+  const [autoCutBg, setAutoCutBg] = useState(true)
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const photoInputRef = useRef(null)
 
   // Bir logo dataUrl'ini tuvale yerlestir
   const addLogoToCanvas = async (dataUrl) => {
@@ -107,7 +113,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const customBoxes = async () => {
     const tokens = customTexts.split('/').map((t) => t.trim()).filter(Boolean)
     if (!tokens.length) { toast.error('Metinleri / ile ayirarak yazin (or: Hizli Servis / 2 Yil Garanti / Ucretsiz Kesif)'); return }
-    const canvas = c(); const img = canvas.getObjects().find((o) => o.type === 'image')
+    const canvas = c(); const img = canvas.getObjects().find((o) => (o.type === 'image' || o.type === 'Image') && o.role !== 'canvasBg')
     setCustomBusy(true)
     try {
       let boxes = []
@@ -141,10 +147,11 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
       const canvas = new fabric.Canvas(canvasElRef.current, { backgroundColor: '#0b0b12', preserveObjectStacking: true })
       canvas.setDimensions({ width: CW, height: CH })
       const bg = new fabric.Rect({
-        left: 0, top: 0, width: CW, height: CH, selectable: false, evented: false,
-        fill: new fabric.Gradient({ type: 'linear', coords: { x1: 0, y1: 0, x2: 0, y2: CH }, colorStops: [{ offset: 0, color: '#111827' }, { offset: 1, color: '#0b1e2e' }] }),
+        left: 0, top: 0, width: CW, height: CH, selectable: false, evented: false, fill: '#ffffff',
       })
       canvas.add(bg)
+      bg.role = 'canvasBg'
+      setActiveBg('white')
       const sync = () => {
         const o = canvas.getActiveObject()
         if (!o) return setSel(null)
@@ -191,7 +198,56 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
 
   const f = () => fabricRef.current
   const c = () => canvasRef.current
-  const place = (obj) => { const canvas = c(); canvas.add(obj); canvas.setActiveObject(obj); canvas.requestRenderAll() }
+  const sendBgBack = (canvas) => {
+    const bg = canvas?.getObjects?.().find((o) => o.role === 'canvasBg')
+    if (bg) canvas.sendObjectToBack(bg)
+  }
+  const place = (obj) => {
+    const canvas = c()
+    canvas.add(obj)
+    canvas.setActiveObject(obj)
+    sendBgBack(canvas)
+    canvas.requestRenderAll()
+  }
+
+  const applySolidBg = (fill, id) => {
+    const canvas = c(); const fabric = f(); if (!canvas || !fabric) return
+    canvas.getObjects().filter((o) => o.role === 'canvasBg').forEach((o) => canvas.remove(o))
+    const bg = new fabric.Rect({ left: 0, top: 0, width: CW, height: CH, fill, selectable: false, evented: false })
+    bg.role = 'canvasBg'
+    canvas.add(bg)
+    canvas.sendObjectToBack(bg)
+    canvas.requestRenderAll()
+    setActiveBg(id)
+  }
+
+  const applyBgUrl = async (url, id) => {
+    const canvas = c(); const fabric = f(); if (!canvas || !fabric) return
+    const img = await fabric.FabricImage.fromURL(url, { crossOrigin: 'anonymous' })
+    const scale = Math.max(CW / img.width, CH / img.height)
+    img.set({ left: CW / 2, top: CH / 2, originX: 'center', originY: 'center', scaleX: scale, scaleY: scale, selectable: false, evented: false })
+    img.role = 'canvasBg'
+    canvas.getObjects().filter((o) => o.role === 'canvasBg').forEach((o) => canvas.remove(o))
+    canvas.add(img)
+    canvas.sendObjectToBack(img)
+    canvas.requestRenderAll()
+    setActiveBg(id)
+  }
+
+  const pickPresetBg = async (bg) => {
+    try {
+      if (bg.kind === 'solid') { applySolidBg(bg.fill, bg.id); toast.success(bg.name + ' uygulandi') }
+      else { await applyBgUrl(bg.url, bg.id); toast.success(bg.name + ' yuklendi') }
+    } catch (e) { toast.error('Arka plan yuklenemedi: ' + (e.message || 'dosya okunamadi')) }
+  }
+
+  const uploadCustomBg = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return
+    e.target.value = ''
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+    try { await applyBgUrl(dataUrl, 'custom'); toast.success('Kendi arka planin yuklendi') }
+    catch (err) { toast.error(err.message) }
+  }
 
   const addText = () => { const fabric = f(); place(new fabric.Textbox('Yaziniz', { left: 40, top: 60, width: 240, fontSize: 30, fontWeight: 'bold', fill: '#ffffff', fontFamily: 'Arial', editable: true, padding: 4 })) }
   const addArrow = () => { const fabric = f(); const p = new fabric.Path('M0,15 L40,15 L40,3 L64,22 L40,41 L40,29 L0,29 Z', { left: 80, top: 260, fill: '#ef4444', stroke: '', scaleX: 1.4, scaleY: 1.4 }); place(p) }
@@ -200,25 +256,49 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const addCircle = () => { const fabric = f(); place(new fabric.Circle({ left: 120, top: 300, radius: 46, fill: 'rgba(217,70,239,0.25)', stroke: '#d946ef', strokeWidth: 3 })) }
   const addStar = () => { const fabric = f(); place(new fabric.Polygon(makeStarPoints(), { left: 140, top: 90, fill: '#fbbf24', stroke: '#f59e0b', strokeWidth: 2, shadow: new fabric.Shadow({ color: 'rgba(251,191,36,0.8)', blur: 20 }) })) }
 
-  const uploadDevice = async (e) => {
-    const file = e.target.files?.[0]; if (!file) return
-    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+  const placeDeviceImage = async (dataUrl) => {
     const img = await f().FabricImage.fromURL(dataUrl, { crossOrigin: 'anonymous' })
     const scale = Math.min((CW * 0.7) / img.width, (CH * 0.5) / img.height)
     img.set({ left: CW / 2, top: CH * 0.45, originX: 'center', originY: 'center', scaleX: scale, scaleY: scale })
-    place(img); toast.success('Cihaz gorseli eklendi')
+    img.role = 'device'
+    place(img)
+  }
+
+  const uploadDevice = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return
+    e.target.value = ''
+    const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file) })
+    setPhotoBusy(true)
+    try {
+      let url = dataUrl
+      if (autoCutBg) {
+        try {
+          const r = await api('/studio/remove-bg', { method: 'POST', body: JSON.stringify({ image: dataUrl }) })
+          url = r.image
+          toast.success('Foto eklendi — arka plan silindi. Baska foto da yukleyebilirsiniz.')
+        } catch (err) {
+          toast.error('Arka plan silinemedi, orijinal foto eklendi')
+        }
+      } else {
+        toast.success('Yeni foto tuvale eklendi (ustune baska da ekleyebilirsiniz)')
+      }
+      await placeDeviceImage(url)
+    } finally { setPhotoBusy(false) }
   }
 
   const removeBg = async () => {
     const canvas = c(); const active = canvas.getActiveObject()
-    const target = active && active.type === 'image' ? active : canvas.getObjects().find((o) => o.type === 'image')
-    if (!target) { toast.error('Once bir cihaz gorseli yukleyin'); return }
+    const target = active && (active.type === 'image' || active.type === 'Image') && active.role !== 'canvasBg'
+      ? active
+      : canvas.getObjects().find((o) => (o.type === 'image' || o.type === 'Image') && o.role !== 'canvasBg')
+    if (!target) { toast.error('Once bir cihaz fotografi yukleyin'); return }
     setBgBusy(true)
     try {
       const r = await api('/studio/remove-bg', { method: 'POST', body: JSON.stringify({ image: target.toDataURL({ format: 'png' }) }) })
       const ni = await f().FabricImage.fromURL(r.image)
       ni.set({ left: target.left, top: target.top, originX: target.originX, originY: target.originY, scaleX: target.scaleX, scaleY: target.scaleY, angle: target.angle })
-      canvas.remove(target); canvas.add(ni); canvas.setActiveObject(ni); canvas.requestRenderAll(); toast.success('Arka plan silindi')
+      ni.role = 'device'
+      canvas.remove(target); canvas.add(ni); canvas.setActiveObject(ni); sendBgBack(canvas); canvas.requestRenderAll(); toast.success('Arka plan silindi')
     } catch (e) {
       if (String(e.message).match(/API_KEY|gerekli/)) toast.error('Arka plan silme icin API anahtari gerekli (.env)')
       else toast.error(e.message)
@@ -233,7 +313,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   }
   const delSel = () => { const canvas = c(); const a = canvas.getActiveObject(); if (a) { canvas.remove(a); canvas.discardActiveObject(); canvas.requestRenderAll(); setSel(null) } }
   const front = () => { const a = c().getActiveObject(); if (a) { c().bringObjectToFront(a); c().requestRenderAll() } }
-  const back = () => { const a = c().getActiveObject(); if (a) { c().sendObjectToBack(a); c().getObjects()[0] && c().sendObjectToBack(c().getObjects().find(o=>!o.selectable)||a); c().requestRenderAll() } }
+  const back = () => { const a = c().getActiveObject(); if (a) { c().sendObjectToBack(a); sendBgBack(c()); c().requestRenderAll() } }
 
   const onAudioUpload = async (e) => {
     const file = e.target.files?.[0]; if (!file) return
@@ -287,7 +367,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   }
 
   const aiSuggest = async () => {
-    const canvas = c(); const img = canvas.getObjects().find((o) => o.type === 'image')
+    const canvas = c(); const img = canvas.getObjects().find((o) => (o.type === 'image' || o.type === 'Image') && o.role !== 'canvasBg')
     if (!img) { toast.error('Once bir cihaz gorseli yukleyin'); return }
     setAiBusy(true)
     try {
@@ -341,6 +421,19 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
         <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Type className="h-4 w-4 text-indigo-400" /> Serbest Tasarim Editoru (9:16)</CardTitle></CardHeader>
           <CardContent>
+            <div className="mb-3 rounded-lg border border-cyan-500/25 bg-cyan-950/15 p-3">
+              <p className="mb-2 text-xs font-semibold text-cyan-200">Foto yukle (arka plan sil)</p>
+              <p className="mb-2 text-[11px] text-zinc-500">Calisirken baska foto da ekleyebilirsiniz — her yukleme yeni cihaz olarak tuvale biner.</p>
+              <label className={`flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-cyan-700/50 bg-zinc-950/60 px-3 py-3 text-center hover:border-cyan-400/60 ${(photoBusy || bgBusy) ? 'pointer-events-none opacity-60' : ''}`}>
+                {photoBusy ? <Loader2 className="h-5 w-5 animate-spin text-cyan-300" /> : <ImagePlus className="h-5 w-5 text-cyan-300" />}
+                <span className="text-xs text-zinc-200">Yeni foto sec / tekrar yukle</span>
+                <input ref={photoInputRef} type="file" accept="image/*" onChange={uploadDevice} className="hidden" />
+              </label>
+              <label className="mt-2 flex items-center gap-2 text-[11px] text-zinc-400">
+                <input type="checkbox" checked={autoCutBg} onChange={(e) => setAutoCutBg(e.target.checked)} />
+                Yuklerken arka plani otomatik sil
+              </label>
+            </div>
             <div className="mb-3 flex flex-wrap gap-2">
               <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-200 hover:border-indigo-500/50">
                 <ImageUp className="h-3.5 w-3.5" /> Cihaz Yukle<input type="file" accept="image/*" onChange={uploadDevice} className="hidden" />
@@ -397,6 +490,40 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
       </div>
 
       <div className="lg:col-span-2 space-y-6">
+        <Card className="border-zinc-800 bg-zinc-900/70">
+          <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Layers className="h-4 w-4 text-sky-400" /> Arka Plan</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-zinc-500">Afiş zemini. Beyaz studio, klima/VRF zeminleri veya kendi fotonuz. Cihaz fotosu bunun ustune biner.</p>
+            <div className="flex gap-1 rounded-md border border-zinc-800 bg-zinc-950 p-0.5">
+              <button type="button" onClick={() => setBgPanel('hazir')} className={`flex-1 rounded px-2 py-1.5 text-xs ${bgPanel === 'hazir' ? 'bg-sky-600 text-white' : 'text-zinc-400'}`}>Hazir zeminler</button>
+              <button type="button" onClick={() => setBgPanel('yukle')} className={`flex-1 rounded px-2 py-1.5 text-xs ${bgPanel === 'yukle' ? 'bg-sky-600 text-white' : 'text-zinc-400'}`}>Arka plan yukle</button>
+            </div>
+            {bgPanel === 'hazir' ? (
+              <div className="grid grid-cols-3 gap-2">
+                {STUDIO_BACKGROUNDS.map((bg) => (
+                  <button
+                    key={bg.id}
+                    type="button"
+                    onClick={() => pickPresetBg(bg)}
+                    className={`overflow-hidden rounded-md border text-left ${activeBg === bg.id ? 'border-sky-400 ring-2 ring-sky-400/40' : 'border-zinc-700 hover:border-sky-500/50'}`}
+                    title={bg.name}
+                  >
+                    <div className="h-16 w-full" style={bg.kind === 'solid' ? { background: bg.fill } : { backgroundImage: `url(${bg.url})`, backgroundSize: 'cover', backgroundPosition: 'center' }} />
+                    <span className="block truncate px-1 py-1 text-[10px] text-zinc-300">{bg.name}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <label className="flex min-h-[88px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-sky-700/50 bg-zinc-950/50 p-3 text-center hover:border-sky-400/60">
+                <ImageUp className="h-5 w-5 text-sky-300" />
+                <span className="text-xs text-zinc-200">Kendi arka plan fotonuzu yukleyin</span>
+                <span className="text-[10px] text-zinc-500">JPG / PNG — tuvali doldurur</span>
+                <input type="file" accept="image/*" onChange={uploadCustomBg} className="hidden" />
+              </label>
+            )}
+          </CardContent>
+        </Card>
+
         <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Layers className="h-4 w-4 text-amber-400" /> Logo Kutuphanesi <span className="ml-auto text-xs font-normal text-zinc-500">{logos.length}/5</span></CardTitle></CardHeader>
           <CardContent className="space-y-3">

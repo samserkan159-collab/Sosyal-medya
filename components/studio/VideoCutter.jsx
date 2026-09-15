@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Upload, Scissors, SplitSquareHorizontal, Loader2, Download, Youtube, Facebook, Instagram,
-  CalendarClock, Trash2, Plus, Film, Flag, Image as ImageIcon, Smartphone, VolumeX, Music,
+  CalendarClock, Trash2, Plus, Film, Flag, Image as ImageIcon, Smartphone, VolumeX, Music, Type,
 } from 'lucide-react'
 
 const api = async (path, opts) => {
@@ -52,6 +52,7 @@ export default function VideoCutter({ pageId }) {
   const [introBusy, setIntroBusy] = useState(false)
   const [history, setHistory] = useState([])
   const [playerSize, setPlayerSize] = useState('orta') // kucuk | orta | buyuk
+  const [textOpen, setTextOpen] = useState(false)
 
   const playerH = {
     kucuk: 'max-h-[220px]',
@@ -441,6 +442,27 @@ export default function VideoCutter({ pageId }) {
                     </div>
                   )}
                 </div>
+
+                <div className="rounded-lg border border-sky-500/20 bg-sky-950/10 p-2">
+                  <button type="button" onClick={() => setTextOpen((s) => !s)} className="flex w-full items-center gap-2 text-sm font-medium text-sky-300">
+                    <Type className="h-4 w-4" /> Sahneye yazi / reklam ekle <span className="ml-auto text-xs text-zinc-500">{textOpen ? 'gizle' : 'ac'}</span>
+                  </button>
+                  {textOpen && (
+                    <OverlayTextForm
+                      duration={file.duration}
+                      currentTime={videoRef.current?.currentTime || 0}
+                      busy={busy}
+                      onApply={async (payload) => {
+                        setBusy(true)
+                        try {
+                          const res = await api('/video/overlay-text', { method: 'POST', body: JSON.stringify({ file: file.file, ...payload }) })
+                          adoptFile(res, 'Yazili sahne')
+                          toast.success('Yazi videoya bindirildi. Oynaticida kontrol edin.')
+                        } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+                      }}
+                    />
+                  )}
+                </div>
               </>
             )}
           </CardContent>
@@ -474,6 +496,7 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
   const [thumb, setThumb] = useState(null)
   const [showMusic, setShowMusic] = useState(false)
   const [presetId, setPresetId] = useState('enerjik')
+  const [showText, setShowText] = useState(false)
 
   const grabThumb = async () => {
     setWorking('thumb')
@@ -550,6 +573,7 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
         <button onClick={makeVertical} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-fuchsia-500/50 disabled:opacity-50">{working === 'vertical' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Smartphone className="h-3 w-3" />} 9:16 Yap</button>
         <button onClick={muteVideo} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-red-500/50 disabled:opacity-50">{working === 'mute' ? <Loader2 className="h-3 w-3 animate-spin" /> : <VolumeX className="h-3 w-3" />} Sesi Kaldir</button>
         <button onClick={() => setShowMusic((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-emerald-500/50 disabled:opacity-50">{working === 'music' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music className="h-3 w-3" />} Muzik Bindir</button>
+        <button onClick={() => setShowText((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-sky-500/50 disabled:opacity-50">{working === 'text' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Type className="h-3 w-3" />} Yazi</button>
       </div>
 
       {showMusic && (
@@ -560,6 +584,23 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
           {presetId && <audio controls src={`/api/media?dir=music&file=${presetId}.mp3`} className="h-8 w-full" />}
           <Button onClick={addMusic} disabled={!!working} size="sm" className="w-full bg-emerald-600 hover:bg-emerald-500"><Music className="mr-2 h-4 w-4" /> Secili Muzigi Bindir</Button>
         </div>
+      )}
+
+      {showText && (
+        <OverlayTextForm
+          duration={r.duration || 0}
+          currentTime={vidRef.current?.currentTime || 0}
+          busy={!!working}
+          onApply={async (payload) => {
+            setWorking('text')
+            try {
+              const res = await api('/video/overlay-text', { method: 'POST', body: JSON.stringify({ file: r.file, ...payload }) })
+              onNewResult?.({ ...res, label: 'Yazili' })
+              setShowText(false)
+              toast.success('Yazi bindirildi, sonuclara eklendi.')
+            } catch (e) { toast.error(e.message) } finally { setWorking('') }
+          }}
+        />
       )}
 
       {thumb && (
@@ -591,6 +632,60 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
           <Button onClick={scheduleIt} size="sm" className="w-full bg-indigo-600 hover:bg-indigo-500"><CalendarClock className="mr-2 h-4 w-4" /> Zamanla</Button>
         </div>
       )}
+    </div>
+  )
+}
+
+function OverlayTextForm({ duration = 0, currentTime = 0, busy, onApply }) {
+  const [text, setText] = useState('')
+  const [start, setStart] = useState(0)
+  const [end, setEnd] = useState(Number(duration || 0))
+  const [position, setPosition] = useState('bottom')
+  const [color, setColor] = useState('#ffffff')
+  const [whole, setWhole] = useState(false)
+
+  useEffect(() => {
+    setEnd((e) => {
+      const d = Number(duration || 0)
+      if (!d) return e
+      return e > d || e === 0 ? Number(d.toFixed(1)) : e
+    })
+  }, [duration])
+
+  const apply = () => {
+    if (!String(text).trim()) { toast.error('Once yazi yazin (ornek: Yaz kampanyasi)'); return }
+    onApply?.({ text: text.trim(), start, end, position, color, whole })
+  }
+
+  return (
+    <div className="mt-3 space-y-2">
+      <p className="text-[11px] text-zinc-500">Bir sahneye reklam/kampanya yazisi. Sureyi slaytla secin veya tum videoya uygulayin.</p>
+      <Textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ornek: Yaz bakiminda %20 / Ucretsiz kesif" className="border-zinc-800 bg-zinc-950 text-sm" />
+      <label className="flex items-center gap-2 text-[11px] text-zinc-400">
+        <input type="checkbox" checked={whole} onChange={(e) => setWhole(e.target.checked)} />
+        Tum videoda goster
+      </label>
+      {!whole && (
+        <>
+          <div className="flex items-center justify-between text-[11px] text-zinc-400">
+            <span>Baslangic {fmt(start)}</span>
+            <button type="button" onClick={() => setStart(Number((currentTime || 0).toFixed(1)))} className="text-sky-300 underline">Oynatici konumu</button>
+          </div>
+          <input type="range" min="0" max={duration || 0} step="0.1" value={start} onChange={(e) => setStart(Number(e.target.value))} className="w-full accent-sky-500" />
+          <div className="flex items-center justify-between text-[11px] text-zinc-400">
+            <span>Bitis {fmt(end)}</span>
+            <button type="button" onClick={() => setEnd(Number((currentTime || 0).toFixed(1)))} className="text-sky-300 underline">Oynatici konumu</button>
+          </div>
+          <input type="range" min="0" max={duration || 0} step="0.1" value={end} onChange={(e) => setEnd(Number(e.target.value))} className="w-full accent-emerald-500" />
+        </>
+      )}
+      <div className="flex flex-wrap gap-1.5">
+        {[['top', 'Ust'], ['center', 'Orta'], ['bottom', 'Alt']].map(([id, label]) => (
+          <button key={id} type="button" onClick={() => setPosition(id)} className={`rounded-md border px-2 py-1 text-[11px] ${position === id ? 'border-sky-500 bg-sky-500/15 text-sky-200' : 'border-zinc-700 text-zinc-400'}`}>{label}</button>
+        ))}
+        <label className="ml-auto flex items-center gap-1 text-[11px] text-zinc-400">Renk<input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-6 w-8 rounded border-0 bg-transparent" /></label>
+      </div>
+      <Button type="button" onClick={apply} disabled={busy} className="w-full bg-sky-600 hover:bg-sky-500">{busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Type className="mr-2 h-4 w-4" />} Yaziyi Videoya Bindir</Button>
     </div>
   )
 }

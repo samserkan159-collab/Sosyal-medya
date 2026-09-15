@@ -41,7 +41,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
-import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio, probeVideoInfo, prependPoster, exciseRanges } from '@/lib/video'
+import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio, probeVideoInfo, prependPoster, exciseRanges, overlayText } from '@/lib/video'
 import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { videoAiConfigured, modelCatalog, estimateUsd, buildScenePrompt, syncScenePrompt, startVideoJob, pollVideoOperation } from '@/lib/videoai'
 import { verifyMetaSignature } from '@/lib/auth'
@@ -1321,6 +1321,39 @@ async function handleRoute(request, { params }) {
         return json({ jobId: id, file: outFile, url: doc.videoUrl, duration, action })
       } catch (e) {
         await log('AI_VISION', 'ERROR', 'Video ses islemi hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      }
+    }
+
+    // Videoya sahne/reklam yazisi bindir
+    if (route === '/video/overlay-text' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      if (!String(b.text || '').trim()) return json({ error: 'yazi zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      ensureDirs()
+      const id = uuidv4()
+      const outFile = `txt_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      try {
+        await overlayText({
+          inputPath: inAbs,
+          outPath: outAbs,
+          text: b.text,
+          start: b.whole ? 0 : b.start,
+          end: b.whole ? null : b.end,
+          position: b.position || 'bottom',
+          color: b.color || '#ffffff',
+          fontSize: b.fontSize,
+        })
+        let duration = null; try { duration = Number((await probeDuration(outAbs)).toFixed(2)) } catch (e) {}
+        const doc = { id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`, source: 'video-text', duration, title: '', description: '', error: null, createdAt: new Date(), updatedAt: new Date() }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Video yazisi eklendi', { id })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Video yazi hatasi', { error: e.message })
         return json({ error: e.message }, 502)
       }
     }
