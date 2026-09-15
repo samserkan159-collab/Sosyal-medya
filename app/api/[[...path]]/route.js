@@ -41,7 +41,7 @@ import {
 import { publishFacebookReel } from '@/lib/fbreels'
 import { igConfigured, publishInstagramReel } from '@/lib/instagram'
 import { renderReels, renderMultiScene, PRESETS, presetPath } from '@/lib/reels'
-import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio, probeVideoInfo, prependPoster, exciseRanges, overlayText } from '@/lib/video'
+import { probeDuration, trimVideo, extractThumbnail, toVertical, stripAudio, replaceAudio, probeVideoInfo, prependPoster, exciseRanges, overlayText, overlayImage } from '@/lib/video'
 import { transcribeAudio, suggestPosterLabels, customPosterBoxes } from '@/lib/ai'
 import { videoAiConfigured, modelCatalog, estimateUsd, buildScenePrompt, syncScenePrompt, startVideoJob, pollVideoOperation } from '@/lib/videoai'
 import { verifyMetaSignature } from '@/lib/auth'
@@ -1355,6 +1355,48 @@ async function handleRoute(request, { params }) {
       } catch (e) {
         await log('AI_VISION', 'ERROR', 'Video yazi hatasi', { error: e.message })
         return json({ error: e.message }, 502)
+      }
+    }
+
+    // Videoya gorsel / logo bindir (istenen konum)
+    if (route === '/video/overlay-image' && method === 'POST') {
+      const b = await request.json()
+      if (!b.file) return json({ error: 'file zorunlu' }, 400)
+      if (!b.image) return json({ error: 'gorsel zorunlu' }, 400)
+      const inAbs = path.join(UPLOAD_DIR, safeName(b.file))
+      if (!inAbs.startsWith(UPLOAD_DIR) || !fs.existsSync(inAbs)) return json({ error: 'video dosyasi yok' }, 404)
+      const m = String(b.image).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/)
+      if (!m) return json({ error: 'gecersiz gorsel (dataUrl)' }, 400)
+      const raw = Buffer.from(m[2], 'base64')
+      if (raw.length > 12 * 1024 * 1024) return json({ error: 'gorsel 12MB ustu olamaz' }, 400)
+      const ext = m[1].includes('png') ? 'png' : m[1].includes('webp') ? 'webp' : m[1].includes('gif') ? 'gif' : 'jpg'
+      ensureDirs()
+      const id = uuidv4()
+      const imgPath = path.join(os.tmpdir(), `vovl_${id}.${ext}`)
+      const outFile = `imgov_${id}.mp4`
+      const outAbs = path.join(UPLOAD_DIR, outFile)
+      fs.writeFileSync(imgPath, raw)
+      try {
+        await overlayImage({
+          inputPath: inAbs,
+          imagePath: imgPath,
+          outPath: outAbs,
+          start: b.whole ? 0 : b.start,
+          end: b.whole ? null : b.end,
+          xPct: b.xPct,
+          yPct: b.yPct,
+          sizePct: b.sizePct,
+        })
+        let duration = null; try { duration = Number((await probeDuration(outAbs)).toFixed(2)) } catch (e) {}
+        const doc = { id, status: 'DONE', outFile, videoUrl: `/api/media?dir=uploads&file=${outFile}`, source: 'video-image', duration, title: '', description: '', error: null, createdAt: new Date(), updatedAt: new Date() }
+        await database.collection('renders').insertOne(doc)
+        await log('AI_VISION', 'INFO', 'Video gorseli eklendi', { id })
+        return json({ jobId: id, file: outFile, url: doc.videoUrl, duration })
+      } catch (e) {
+        await log('AI_VISION', 'ERROR', 'Video gorsel hatasi', { error: e.message })
+        return json({ error: e.message }, 502)
+      } finally {
+        try { fs.unlinkSync(imgPath) } catch (err) {}
       }
     }
 

@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import {
   Upload, Scissors, SplitSquareHorizontal, Loader2, Download, Youtube, Facebook, Instagram,
-  CalendarClock, Trash2, Plus, Film, Flag, Image as ImageIcon, Smartphone, VolumeX, Music, Type,
+  CalendarClock, Trash2, Plus, Film, Flag, Image as ImageIcon, Smartphone, VolumeX, Music, Type, ImagePlus,
 } from 'lucide-react'
 
 const api = async (path, opts) => {
@@ -53,6 +53,7 @@ export default function VideoCutter({ pageId }) {
   const [history, setHistory] = useState([])
   const [playerSize, setPlayerSize] = useState('orta') // kucuk | orta | buyuk
   const [textOpen, setTextOpen] = useState(false)
+  const [imageOpen, setImageOpen] = useState(false)
 
   const playerH = {
     kucuk: 'max-h-[220px]',
@@ -463,6 +464,28 @@ export default function VideoCutter({ pageId }) {
                     />
                   )}
                 </div>
+
+                <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-2">
+                  <button type="button" onClick={() => setImageOpen((s) => !s)} className="flex w-full items-center gap-2 text-sm font-medium text-amber-300">
+                    <ImagePlus className="h-4 w-4" /> Sahneye resim koy <span className="ml-auto text-xs text-zinc-500">{imageOpen ? 'gizle' : 'ac'}</span>
+                  </button>
+                  {imageOpen && (
+                    <OverlayImageForm
+                      duration={file.duration}
+                      currentTime={videoRef.current?.currentTime || 0}
+                      videoEl={videoRef.current}
+                      busy={busy}
+                      onApply={async (payload) => {
+                        setBusy(true)
+                        try {
+                          const res = await api('/video/overlay-image', { method: 'POST', body: JSON.stringify({ file: file.file, ...payload }) })
+                          adoptFile(res, 'Resimli sahne')
+                          toast.success('Resim videoya bindirildi. Oynaticida kontrol edin.')
+                        } catch (e) { toast.error(e.message) } finally { setBusy(false) }
+                      }}
+                    />
+                  )}
+                </div>
               </>
             )}
           </CardContent>
@@ -497,6 +520,7 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
   const [showMusic, setShowMusic] = useState(false)
   const [presetId, setPresetId] = useState('enerjik')
   const [showText, setShowText] = useState(false)
+  const [showImage, setShowImage] = useState(false)
 
   const grabThumb = async () => {
     setWorking('thumb')
@@ -574,6 +598,7 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
         <button onClick={muteVideo} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-red-500/50 disabled:opacity-50">{working === 'mute' ? <Loader2 className="h-3 w-3 animate-spin" /> : <VolumeX className="h-3 w-3" />} Sesi Kaldir</button>
         <button onClick={() => setShowMusic((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-emerald-500/50 disabled:opacity-50">{working === 'music' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Music className="h-3 w-3" />} Muzik Bindir</button>
         <button onClick={() => setShowText((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-sky-500/50 disabled:opacity-50">{working === 'text' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Type className="h-3 w-3" />} Yazi</button>
+        <button onClick={() => setShowImage((s) => !s)} disabled={!!working} className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 hover:border-amber-500/50 disabled:opacity-50">{working === 'image' ? <Loader2 className="h-3 w-3 animate-spin" /> : <ImagePlus className="h-3 w-3" />} Resim</button>
       </div>
 
       {showMusic && (
@@ -598,6 +623,24 @@ function ResultCard({ r, index, pageId, presets = [], onNewResult }) {
               onNewResult?.({ ...res, label: 'Yazili' })
               setShowText(false)
               toast.success('Yazi bindirildi, sonuclara eklendi.')
+            } catch (e) { toast.error(e.message) } finally { setWorking('') }
+          }}
+        />
+      )}
+
+      {showImage && (
+        <OverlayImageForm
+          duration={r.duration || 0}
+          currentTime={vidRef.current?.currentTime || 0}
+          videoEl={vidRef.current}
+          busy={!!working}
+          onApply={async (payload) => {
+            setWorking('image')
+            try {
+              const res = await api('/video/overlay-image', { method: 'POST', body: JSON.stringify({ file: r.file, ...payload }) })
+              onNewResult?.({ ...res, label: 'Resimli' })
+              setShowImage(false)
+              toast.success('Resim bindirildi, sonuclara eklendi.')
             } catch (e) { toast.error(e.message) } finally { setWorking('') }
           }}
         />
@@ -686,6 +729,164 @@ function OverlayTextForm({ duration = 0, currentTime = 0, busy, onApply }) {
         <label className="ml-auto flex items-center gap-1 text-[11px] text-zinc-400">Renk<input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="h-6 w-8 rounded border-0 bg-transparent" /></label>
       </div>
       <Button type="button" onClick={apply} disabled={busy} className="w-full bg-sky-600 hover:bg-sky-500">{busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Type className="mr-2 h-4 w-4" />} Yaziyi Videoya Bindir</Button>
+    </div>
+  )
+}
+
+const IMAGE_SPOTS = [
+  { x: 12, y: 12, label: 'Sol ust' },
+  { x: 50, y: 10, label: 'Ust' },
+  { x: 88, y: 12, label: 'Sag ust' },
+  { x: 12, y: 50, label: 'Sol' },
+  { x: 50, y: 50, label: 'Orta' },
+  { x: 88, y: 50, label: 'Sag' },
+  { x: 12, y: 88, label: 'Sol alt' },
+  { x: 50, y: 88, label: 'Alt' },
+  { x: 88, y: 88, label: 'Sag alt' },
+]
+
+function OverlayImageForm({ duration = 0, currentTime = 0, videoEl, busy, onApply }) {
+  const [image, setImage] = useState('')
+  const [xPct, setXPct] = useState(50)
+  const [yPct, setYPct] = useState(82)
+  const [sizePct, setSizePct] = useState(28)
+  const [start, setStart] = useState(0)
+  const [end, setEnd] = useState(Number(duration || 0))
+  const [whole, setWhole] = useState(false)
+  const [frame, setFrame] = useState('')
+  const padRef = useRef(null)
+  const dragRef = useRef(false)
+
+  useEffect(() => {
+    setEnd((e) => {
+      const d = Number(duration || 0)
+      if (!d) return e
+      return e > d || e === 0 ? Number(d.toFixed(1)) : e
+    })
+  }, [duration])
+
+  const grabFrame = () => {
+    const v = videoEl
+    if (!v || v.readyState < 2) { toast.error('Once videoyu oynatin, kare almak icin'); return }
+    try {
+      const c = document.createElement('canvas')
+      c.width = v.videoWidth || 360
+      c.height = v.videoHeight || 640
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height)
+      setFrame(c.toDataURL('image/jpeg', 0.55))
+    } catch (e) { toast.error('Kare alinamadi') }
+  }
+
+  const pickFile = (e) => {
+    const f = e.target.files?.[0]; if (!f) return
+    e.target.value = ''
+    const r = new FileReader()
+    r.onload = () => setImage(String(r.result || ''))
+    r.readAsDataURL(f)
+  }
+
+  const setPad = (clientX, clientY) => {
+    const el = padRef.current; if (!el) return
+    const box = el.getBoundingClientRect()
+    const x = ((clientX - box.left) / box.width) * 100
+    const y = ((clientY - box.top) / box.height) * 100
+    setXPct(Math.max(0, Math.min(100, Number(x.toFixed(1)))))
+    setYPct(Math.max(0, Math.min(100, Number(y.toFixed(1)))))
+  }
+
+  const stay = Math.max(0, Number((end - start).toFixed(1)))
+  const setStay = (secs) => {
+    const d = Number(duration || 0)
+    const n = Math.max(0.1, Number(secs) || 0.1)
+    setEnd(Number(Math.min(d || n, start + n).toFixed(1)))
+  }
+
+  const apply = () => {
+    if (!image) { toast.error('Once bir resim yukleyin'); return }
+    if (!whole && !(end > start)) { toast.error('Bitis, baslangictan buyuk olmali'); return }
+    onApply?.({ image, xPct, yPct, sizePct, start, end, whole })
+  }
+
+  const ar = videoEl?.videoWidth && videoEl?.videoHeight ? (videoEl.videoWidth / videoEl.videoHeight) : (9 / 16)
+
+  return (
+    <div className="mt-3 space-y-3">
+      <p className="text-[11px] text-zinc-500">Logo, urun veya kampanya gorseli. Alana tiklayip surukleyin; asagidan kac saniye gorunecegini secin.</p>
+      <label className="flex min-h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-amber-700/50 bg-zinc-950/50 p-3 text-center hover:border-amber-400/60">
+        {image ? <img src={image} alt="yuklenen" className="max-h-16 object-contain" /> : <ImagePlus className="h-5 w-5 text-amber-300" />}
+        <span className="text-xs text-zinc-200">{image ? 'Baska resim sec' : 'Resim yukle (PNG / JPG)'}</span>
+        <input type="file" accept="image/*" onChange={pickFile} className="hidden" />
+      </label>
+
+      <div>
+        <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-400">
+          <span>Konum — kutuya tikla / surukle</span>
+          <button type="button" onClick={grabFrame} className="text-amber-300 underline">Oynaticidan kare al</button>
+        </div>
+        <div
+          ref={padRef}
+          className="relative mx-auto w-full max-w-[220px] cursor-crosshair overflow-hidden rounded-md border border-zinc-700 bg-zinc-950"
+          style={{ aspectRatio: String(ar) }}
+          onPointerDown={(e) => { dragRef.current = true; e.currentTarget.setPointerCapture(e.pointerId); setPad(e.clientX, e.clientY) }}
+          onPointerMove={(e) => { if (dragRef.current) setPad(e.clientX, e.clientY) }}
+          onPointerUp={() => { dragRef.current = false }}
+          onPointerCancel={() => { dragRef.current = false }}
+        >
+          {frame ? <img src={frame} alt="" className="absolute inset-0 h-full w-full object-cover opacity-80" /> : <div className="absolute inset-0 bg-[linear-gradient(180deg,#1e293b,#0b1220)]" />}
+          {image && (
+            <img
+              src={image}
+              alt=""
+              draggable={false}
+              className="pointer-events-none absolute max-h-none object-contain drop-shadow"
+              style={{ left: xPct + '%', top: yPct + '%', width: sizePct + '%', transform: 'translate(-50%, -50%)' }}
+            />
+          )}
+        </div>
+        <div className="mt-2 grid grid-cols-3 gap-1">
+          {IMAGE_SPOTS.map((s) => (
+            <button key={s.label} type="button" onClick={() => { setXPct(s.x); setYPct(s.y) }} className="rounded border border-zinc-700 px-1 py-1 text-[10px] text-zinc-400 hover:border-amber-500/50 hover:text-amber-200">{s.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 flex items-center justify-between text-[11px] text-zinc-400"><span>Resim boyutu</span><span className="font-semibold text-amber-300">%{sizePct}</span></label>
+        <input type="range" min="8" max="70" step="1" value={sizePct} onChange={(e) => setSizePct(Number(e.target.value))} className="w-full accent-amber-500" />
+      </div>
+
+      <div className="rounded-md border border-amber-500/20 bg-amber-950/10 p-2 space-y-2">
+        <p className="text-[11px] font-medium text-amber-200">Sure araligi — videoda ne kadar dursun</p>
+        <label className="flex items-center gap-2 text-[11px] text-zinc-400">
+          <input type="checkbox" checked={whole} onChange={(e) => setWhole(e.target.checked)} />
+          Tum videoda goster
+        </label>
+        {!whole && (
+          <>
+            <div className="flex flex-wrap gap-1.5">
+              {[1, 2, 3, 5, 8].map((n) => (
+                <button key={n} type="button" onClick={() => { setStart(Number((currentTime || 0).toFixed(1))); setStay(n) }} className="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-amber-500/50">{n} sn</button>
+              ))}
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-zinc-400">
+              <span>Baslangic {fmt(start)}</span>
+              <button type="button" onClick={() => setStart(Number((currentTime || 0).toFixed(1)))} className="text-amber-300 underline">Oynatici konumu</button>
+            </div>
+            <input type="range" min="0" max={duration || 0} step="0.1" value={start} onChange={(e) => setStart(Number(e.target.value))} className="w-full accent-sky-500" />
+            <div className="flex items-center justify-between text-[11px] text-zinc-400">
+              <span>Bitis {fmt(end)}</span>
+              <button type="button" onClick={() => setEnd(Number((currentTime || 0).toFixed(1)))} className="text-amber-300 underline">Oynatici konumu</button>
+            </div>
+            <input type="range" min="0" max={duration || 0} step="0.1" value={end} onChange={(e) => setEnd(Number(e.target.value))} className="w-full accent-emerald-500" />
+            <div>
+              <label className="mb-1 flex items-center justify-between text-[11px] text-zinc-400"><span>Gorunur kalma</span><span className="font-semibold text-amber-300">{fmt(stay)}</span></label>
+              <input type="range" min="0.1" max={Math.max(0.1, (duration || 0) - start)} step="0.1" value={Math.min(stay, Math.max(0.1, (duration || 0) - start))} onChange={(e) => setStay(e.target.value)} className="w-full accent-amber-500" />
+            </div>
+          </>
+        )}
+      </div>
+
+      <Button type="button" onClick={apply} disabled={busy} className="w-full bg-amber-600 hover:bg-amber-500">{busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImagePlus className="mr-2 h-4 w-4" />} Resmi Videoya Bindir</Button>
     </div>
   )
 }
