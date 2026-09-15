@@ -45,6 +45,7 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
   const [presets, setPresets] = useState([])
   const [audioFile, setAudioFile] = useState(null)
   const [rendering, setRendering] = useState(false)
+  const [renderElapsed, setRenderElapsed] = useState(0)
   const [job, setJob] = useState(null)
   const [publishing, setPublishing] = useState('')
 
@@ -326,7 +327,10 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
     const canvas = c(); if (!canvas) return
     canvas.discardActiveObject(); setSel(null); canvas.requestRenderAll()
     const posterDataUrl = canvas.toDataURL({ format: 'png', multiplier: MULT })
-    setRendering(true); setJob(null)
+    setRendering(true); setJob(null); setRenderElapsed(0)
+    const t0 = Date.now()
+    const tick = setInterval(() => setRenderElapsed(Math.max(1, Math.round((Date.now() - t0) / 1000))), 500)
+    const stop = () => { clearInterval(tick); setRendering(false) }
     try {
       const body = scenes.length > 0
         ? { scenes: scenes.map((s) => ({ posterDataUrl: s.dataUrl, duration: s.duration })), transition, transitionDur, audioMode, presetId, audioFile }
@@ -335,11 +339,17 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
       const poll = setInterval(async () => {
         try {
           const st = await api('/studio/render/' + jobId)
-          if (st.status === 'DONE') { clearInterval(poll); setJob(st); setRendering(false); toast.success('Reels videosu hazir!') }
-          else if (st.status === 'FAILED') { clearInterval(poll); setRendering(false); toast.error('Render hatasi: ' + st.error) }
-        } catch (e) {}
+          if (st.status === 'DONE') { clearInterval(poll); stop(); setJob(st); toast.success('Reels videosu hazir!') }
+          else if (st.status === 'FAILED') { clearInterval(poll); stop(); toast.error('Render hatasi: ' + (st.error || 'bilinmiyor')) }
+          else if (Date.now() - t0 > 120000) {
+            clearInterval(poll); stop()
+            toast.error('2 dakikayi asti — Render starter CPU yavas kaldi. Paneli yenileyip tekrar deneyin.')
+          }
+        } catch (e) {
+          if (Date.now() - t0 > 120000) { clearInterval(poll); stop(); toast.error(e.message || 'Render durumu okunamadi') }
+        }
       }, 2000)
-    } catch (e) { setRendering(false); toast.error(e.message) }
+    } catch (e) { stop(); toast.error(e.message) }
   }
 
   const captureScene = () => {
@@ -621,7 +631,8 @@ export default function ReelsStudio({ pageId, integrations = {} }) {
         <Card className="border-zinc-800 bg-zinc-900/70">
           <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Video className="h-4 w-4 text-emerald-400" /> Reels Uretimi (6sn)</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <Button onClick={renderReels} disabled={rendering || !ready} className="w-full bg-emerald-600 hover:bg-emerald-500">{rendering ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Render ediliyor...</> : <><Video className="mr-2 h-4 w-4" /> {scenes.length > 1 ? `${scenes.length} Sahneli Reels Uret` : '6sn Sinematik Reels Uret'}</>}</Button>
+            <Button onClick={renderReels} disabled={rendering || !ready} className="w-full bg-emerald-600 hover:bg-emerald-500">{rendering ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Render ediliyor... {renderElapsed}sn</> : <><Video className="mr-2 h-4 w-4" /> {scenes.length > 1 ? `${scenes.length} Sahneli Reels Uret` : '6sn Sinematik Reels Uret'}</>}</Button>
+            <p className="text-[11px] text-zinc-500">Render sunucuda (ffmpeg). 12sn afis videosu genelde 10–30 sn surer; 2 dakikayi gecerse iptal edilir.</p>
             {job?.videoUrl && (
               <div className="space-y-3">
                 <video src={job.videoUrl} controls className="w-full rounded-lg border border-zinc-800" />

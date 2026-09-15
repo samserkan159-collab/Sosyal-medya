@@ -1537,6 +1537,20 @@ async function handleRoute(request, { params }) {
       const id = pathSegments[2]
       const doc = await database.collection('renders').findOne({ id })
       if (!doc) return json({ error: 'Render bulunamadi' }, 404)
+      if (doc.status === 'RENDERING') {
+        const abs = path.join(UPLOAD_DIR, safeName(doc.outFile || ''))
+        const age = Date.now() - new Date(doc.updatedAt || doc.createdAt).getTime()
+        if (abs.startsWith(UPLOAD_DIR) && fs.existsSync(abs) && fs.statSync(abs).size > 2000) {
+          await database.collection('renders').updateOne({ id }, { $set: { status: 'DONE', videoUrl: `/api/media?dir=uploads&file=${doc.outFile}`, updatedAt: new Date() } })
+          const fresh = await database.collection('renders').findOne({ id })
+          return json(strip(fresh))
+        }
+        if (age > 150_000) {
+          await database.collection('renders').updateOne({ id }, { $set: { status: 'FAILED', error: 'Render zaman asimi (sunucu 0.5 CPU). Tekrar deneyin.', updatedAt: new Date() } })
+          const fresh = await database.collection('renders').findOne({ id })
+          return json(strip(fresh))
+        }
+      }
       return json(strip(doc))
     }
 
